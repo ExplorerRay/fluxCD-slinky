@@ -5,7 +5,6 @@ namespace: slurm
 generatorOptions:
   disableNameSuffixHash: true
 resources:
-  - namespace.yaml
   - helmrelease.yaml
 configMapGenerator:
   - name: slurm-values
