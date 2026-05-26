@@ -5,7 +5,7 @@ Custom IaC project for slinky-related projects
 
 1. Create a Personal Access Token in Github following [this guide](https://fluxcd.io/flux/installation/bootstrap/github/#github-pat)
 2. `kubectl create namespace flux-system`
-3. `kubectl -n flux-system create secret generic flux-system --from-literal=password=<personal_access_token>`
+3. `kubectl -n flux-system create secret generic flux-system --from-literal=username=<github_username> --from-literal=password=<personal_access_token>`
 4. `cd clusters/<cluster_name>/flux-system/`
 5. Create `gotk-components.yaml`
    - With Flux CLI: `flux install --export > gotk-components.yaml`
