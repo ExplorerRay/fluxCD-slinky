@@ -1,0 +1,3 @@
+# https://github.com/SlinkyProject/slurm-operator/blob/main/helm/slurm-operator/values.yaml
+crds:
+  enabled: true

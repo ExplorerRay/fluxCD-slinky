@@ -6,7 +6,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/cert-manager/base
+  path: ./infrastructure/cert-manager/overlays/kind
   prune: true
   force: false
   wait: true
@@ -14,6 +14,8 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  dependsOn:
+    - name: flux-cluster-repositories
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -22,7 +24,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/mariadb-operator/base
+  path: ./infrastructure/mariadb-operator/overlays/kind
   prune: true
   force: false
   wait: true

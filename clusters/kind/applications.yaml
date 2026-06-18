@@ -6,7 +6,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./applications/slurm-operator/base
+  path: ./applications/slurm-operator/overlays/kind
   prune: true
   force: false
   wait: true
@@ -24,7 +24,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./applications/slurm-database/base
+  path: ./applications/slurm-database/overlays/kind
   prune: true
   force: false
   wait: true
@@ -42,7 +42,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./applications/slurm/base
+  path: ./applications/slurm/overlays/kind
   prune: true
   force: false
   sourceRef:
