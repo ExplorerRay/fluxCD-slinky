@@ -1,16 +1,33 @@
 # fluxCD-slinky
 Custom IaC project for slinky-related projects
 
+## Cluster model
+
+This repository manages more than one Kubernetes cluster with Flux:
+
+- `clusters/kind` is the local kind cluster entrypoint.
+- `clusters/kubeadm` is the Flux-managed cluster entrypoint.
+- `base` directories contain shared resources.
+- `overlays/kind` and `overlays/kubeadm` contain cluster-specific resources and
+  values.
+
+See:
+
+- [Stack overview](docs/stack-overview.md)
+- [Bootstrap guide](docs/bootstrap.md)
+- [Repository layout](docs/repository-layout.md)
+
 ## Deploy Procedure
 
-1. Create a Personal Access Token in Github following [this guide](https://fluxcd.io/flux/installation/bootstrap/github/#github-pat)
-2. `kubectl create namespace flux-system`
-3. `kubectl -n flux-system create secret generic flux-system --from-literal=username=<github_username> --from-literal=password=<personal_access_token>`
-4. `cd clusters/<cluster_name>/flux-system/`
-5. Create `gotk-components.yaml`
+1. Provision a Kubernetes cluster — see the [bootstrap guide](docs/bootstrap.md) for kind or kubeadm setup.
+2. Create a Personal Access Token in GitHub following [this guide](https://fluxcd.io/flux/installation/bootstrap/github/#github-pat)
+3. `kubectl create namespace flux-system`
+4. `kubectl -n flux-system create secret generic flux-system --from-literal=username=<github_username> --from-literal=password=<personal_access_token>`
+5. `cd clusters/<cluster_name>/flux-system/`
+6. Create `gotk-components.yaml`
    - With Flux CLI: `flux install --export > gotk-components.yaml`
    - Without Flux CLI: `curl -sL https://github.com/fluxcd/flux2/releases/latest/download/install.yaml > gotk-components.yaml`
-6. Create `gotk-sync.yaml`
+7. Create `gotk-sync.yaml`
 
 ```yaml
 ---
@@ -43,6 +60,8 @@ spec:
   interval: 10m0s
 ```
 
-7. `git commit`
-8. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready
-9. `kubectl apply -f gotk-sync.yaml` and wait for the Kustomization to be ready
+8. `git commit`
+9. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready
+10. `kubectl apply -f gotk-sync.yaml` and wait for the Kustomization to be ready
+
+<!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->
