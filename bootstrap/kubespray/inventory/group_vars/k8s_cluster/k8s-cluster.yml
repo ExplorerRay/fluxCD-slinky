@@ -1,0 +1,12 @@
+---
+kube_network_plugin: calico
+
+# Internal cluster DNS
+cluster_name: cluster.local
+dns_domain: cluster.local
+
+# Container runtime
+container_manager: containerd
+
+# Metrics server — enable if you don't want FluxCD to manage it
+kube_proxy_strict_arp: true

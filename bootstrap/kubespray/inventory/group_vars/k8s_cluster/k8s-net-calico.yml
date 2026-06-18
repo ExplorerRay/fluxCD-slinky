@@ -1,0 +1,10 @@
+---
+# Calico is managed by Kubespray — do not add to FluxCD
+calico_network_backend: vxlan
+calico_datastore: "kdd"
+calico_vxlan_mode: "Always"
+calico_ipip_mode: "Never"
+nat_outgoing: true
+
+# Set to true to enable the Calico eBPF dataplane (requires kernel >= 5.3)
+calico_bpf_enabled: false
