@@ -1,0 +1,85 @@
+---
+# Values for the rook-ceph-cluster Helm chart (kubeadm cluster).
+#
+# Dev-grade, single-node Ceph: one mon, one mgr, one OSD backed by a loopback
+# device over a sparse file (/dev/loop100). BLOCK-ONLY: exposes a single
+# ceph-block RBD StorageClass set as the cluster default. No CephFS, no RGW.
+#
+# Storage upgrade path: once >=3 real nodes with real disks exist, replace the
+# /dev/loop100 device entry below with real disk/LV names, bump
+# cephBlockPools[].spec.replicated.size to 3, and change failureDomain to host.
+
+# Enable the toolbox so `ceph status` can be run from within the cluster.
+toolbox:
+  enabled: true
+
+# Prometheus is not installed yet; disable monitoring integration.
+monitoring:
+  enabled: false
+
+# Cluster-wide ceph.conf overrides. Cap OSD memory on the constrained node.
+configOverride: |
+  [osd]
+  osd_memory_target = 2147483648
+
+cephClusterSpec:
+  mon:
+    count: 1
+    allowMultiplePerNode: true
+  mgr:
+    count: 1
+    allowMultiplePerNode: true
+  dashboard:
+    enabled: true
+  # Modest resource requests/limits for the single constrained node.
+  resources:
+    mgr:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        memory: "512Mi"
+    mon:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        memory: "512Mi"
+    osd:
+      requests:
+        cpu: "250m"
+        memory: "1Gi"
+      limits:
+        memory: "2Gi"
+  storage:
+    useAllNodes: false
+    useAllDevices: false
+    nodes:
+      # The node name MUST match the Kubernetes node hostname.
+      # Set this to the output of: kubectl get nodes -o name
+      # (kubeadm and kind clusters have different node hostnames.)
+      - name: "CHANGEME-node-hostname"  # CHANGEME: kubeadm k8s node hostname
+        devices:
+          - name: "/dev/loop100"  # loopback device created at boot; see bootstrap/rook-ceph
+
+# BLOCK-ONLY: one replicated pool exposing the default ceph-block StorageClass.
+cephBlockPools:
+  - name: ceph-blockpool
+    spec:
+      failureDomain: osd
+      replicated:
+        size: 1
+    storageClass:
+      enabled: true
+      name: ceph-block
+      isDefault: true
+      reclaimPolicy: Delete
+      allowVolumeExpansion: true
+      parameters:
+        imageFormat: "2"
+        imageFeatures: layering
+        csi.storage.k8s.io/fstype: ext4
+
+# Deferred to later work: no CephFS, no object store.
+cephFileSystems: []
+cephObjectStores: []

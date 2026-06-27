@@ -79,4 +79,59 @@ Deploy Flux with the following entrypoint:
 path: ./clusters/kubeadm
 ```
 
+## Rook-Ceph loop device preparation
+
+The dev-grade single-node Ceph cluster (`infrastructure/rook-ceph`) has no spare
+disk, partition, or LV. Its single OSD is backed by a **loopback device over a
+sparse file**: `/dev/loop100` backed by `/var/lib/rook/osd0.img` (200G sparse,
+allocated on demand). Loop attachments do **not** survive a reboot, so the
+device must be (re)created on every boot **before** kubelet — and therefore Rook
+and Ceph — start.
+
+### Kernel modules
+
+The host kernel must provide the `rbd` and `ceph` modules. Load and persist
+them:
+
+```sh
+sudo modprobe rbd ceph
+echo -e "rbd\nceph" | sudo tee /etc/modules-load.d/rook-ceph.conf
+```
+
+### kubeadm: systemd unit
+
+Install the boot-time systemd unit and helper script from
+`bootstrap/rook-ceph/`:
+
+```sh
+sudo install -m 0755 bootstrap/rook-ceph/rook-osd-loop.sh /usr/local/sbin/rook-osd-loop.sh
+sudo install -m 0644 bootstrap/rook-ceph/rook-osd-loop.service /etc/systemd/system/rook-osd-loop.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now rook-osd-loop.service
+```
+
+The unit creates the sparse file with `truncate` if missing and attaches it
+with `losetup`, ordered `Before=kubelet.service`. See
+[bootstrap/rook-ceph/README.md](../bootstrap/rook-ceph/README.md).
+
+### kind: setup step
+
+`bootstrap/kind/setup.sh` creates the sparse file and runs `losetup
+/dev/loop100` on the host before `kind create cluster`. The loop device and its
+backing image are mounted into the kind worker node via `extraMounts` in
+`bootstrap/kind/kind-config.yaml`. Re-running `setup.sh` after a reboot
+re-attaches the device idempotently.
+
+### Node hostname
+
+After the cluster is up, set the OSD node name in the overlay values to match
+the real node hostname:
+
+```sh
+kubectl get nodes -o name
+```
+
+Edit `infrastructure/rook-ceph/overlays/<cluster>/values.yaml` and replace
+`CHANGEME-node-hostname` under `cephClusterSpec.storage.nodes[].name`.
+
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

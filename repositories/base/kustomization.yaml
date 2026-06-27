@@ -5,4 +5,5 @@ namespace: flux-system
 resources:
   - helm-cert-manager.yaml
   - helm-mariadb-operator.yaml
+  - helm-rook-ceph.yaml
   - helm-slinky.yaml

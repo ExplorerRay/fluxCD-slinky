@@ -1,0 +1,14 @@
+[Unit]
+Description=Attach loopback device for dev-grade Rook-Ceph OSD
+DefaultDependencies=no
+After=local-fs.target
+Before=kubelet.service
+ConditionPathExists=/usr/local/sbin/rook-osd-loop.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/rook-osd-loop.sh
+
+[Install]
+WantedBy=multi-user.target
