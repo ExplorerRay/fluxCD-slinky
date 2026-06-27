@@ -38,8 +38,9 @@ Kubespray provisions the cluster and installs Calico before Flux starts.
 
 Kubespray clusters can range from single-node (with control-plane, etcd, and
 worker roles on one machine) to multi-node (with separate control-plane and
-worker nodes). An example inventory in YAML format is provided at
-`bootstrap/kubespray/inventory/hosts.yaml`.
+worker nodes). Example inventories are provided at
+`bootstrap/kubespray/inventory/single.yml` (one schedulable node) and
+`bootstrap/kubespray/inventory/multi.yml` (separate control-plane and workers).
 
 ### Calico network plugin
 

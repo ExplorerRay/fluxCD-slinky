@@ -49,7 +49,8 @@ bootstrap/
     README.md
   kubespray/
     inventory/
-      hosts.yaml
+      single.yml          # single schedulable node
+      multi.yml           # separate control-plane and workers
       group_vars/
         all/
         k8s_cluster/

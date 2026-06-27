@@ -6,15 +6,20 @@ Operational runbook for provisioning and managing the Kubernetes cluster. For ra
 
 - [Kubespray](https://github.com/kubernetes-sigs/kubespray) cloned to `$KUBESPRAY_DIR` (default: `/opt/kubespray`)
 - Ansible installed: `pip install -r $KUBESPRAY_DIR/requirements.txt`
-- SSH access to all nodes in `inventory/hosts.yml`
+- SSH access to all nodes in your chosen inventory file
 
 ## Before Running
 
-Edit `bootstrap/kubespray/inventory/hosts.yml` and populate with actual node IPs and hostnames.
+Two example inventories are provided under `bootstrap/kubespray/inventory/`:
+`single.yml` and `multi.yml`. Pick one and populate it with actual node IPs and
+hostnames. `run.sh` uses `single.yml` by default; select another with the
+`INVENTORY_HOSTS` env var (e.g. `INVENTORY_HOSTS=multi.yml`).
 
-### Single-node cluster
+### Single-node cluster — `single.yml`
 
-For a minimal deployment with one node handling control-plane, etcd, and worker roles:
+For a minimal deployment with one node handling control-plane, etcd, and worker
+roles. Because the node is also in `kube_node`, Kubespray leaves it schedulable
+(no control-plane NoSchedule taint), so all workloads run on it:
 
 ```yaml
 all:
@@ -34,9 +39,9 @@ all:
         kube_node:
 ```
 
-### Multi-node cluster
+### Multi-node cluster — `multi.yml`
 
-For a distributed deployment with separate control-plane and worker nodes. The provided `bootstrap/kubespray/inventory/hosts.yml` includes this topology with node1 as the control-plane and node2, node3 as workers:
+For a distributed deployment with separate control-plane and worker nodes. The provided `multi.yml` has node1 as the control-plane + etcd and node2, node3 as workers:
 
 ```yaml
 all:

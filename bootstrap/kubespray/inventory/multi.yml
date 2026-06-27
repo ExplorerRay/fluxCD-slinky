@@ -1,3 +1,7 @@
+---
+# Multi-node inventory: node1 is the control-plane + etcd; node2 and node3 are
+# dedicated workers. node1 is NOT in kube_node, so Kubespray applies the
+# control-plane NoSchedule taint and ordinary workloads land on the workers.
 all:
   hosts:
     node1:
