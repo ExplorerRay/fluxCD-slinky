@@ -1,0 +1,15 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    # Single-node kind: the control-plane is schedulable and hosts the single
+    # dev-grade OSD. Mount the host loop device (and its backing image) into
+    # this node so Rook-Ceph can use it as the OSD. The host-side device is
+    # created by bootstrap/kind/setup.sh before `kind create cluster`.
+    extraMounts:
+      - hostPath: /dev/loop100
+        containerPath: /dev/loop100
+        propagation: HostToContainer
+      - hostPath: /var/lib/rook
+        containerPath: /var/lib/rook
+        propagation: HostToContainer

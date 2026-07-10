@@ -17,13 +17,25 @@ back storage with real disks and replication.
 
 ## Cluster model
 
-This repository manages more than one Kubernetes cluster with Flux:
+This repository manages more than one Kubernetes cluster with Flux, each with
+a single-node and a multi-node variant:
 
-- `clusters/kind` is the local kind cluster entrypoint.
-- `clusters/kubeadm` is the Flux-managed cluster entrypoint.
+- `clusters/kind-single` — local kind cluster entrypoint, single control-plane
+  node.
+- `clusters/kind-multi` — local kind cluster entrypoint, control-plane + 2
+  workers.
+- `clusters/kubeadm-single` — kubeadm/kubespray cluster entrypoint, single
+  schedulable node.
+- `clusters/kubeadm-multi` — kubeadm/kubespray cluster entrypoint, separate
+  control-plane and workers.
 - `base` directories contain shared resources.
 - `overlays/kind` and `overlays/kubeadm` contain cluster-specific resources and
-  values.
+  values, shared by both variants of that platform (single and multi) — this
+  rule still holds. The one exception is `rook-ceph`, which has per-variant
+  overlays (`overlays/kind-single`, `overlays/kind-multi`,
+  `overlays/kubeadm-single`, `overlays/kubeadm-multi`) layered on top of the
+  shared overlay to bake in the deterministic OSD node hostname for each
+  variant.
 
 See:
 
@@ -73,6 +85,9 @@ spec:
   prune: true
   interval: 10m0s
 ```
+
+`<cluster_name>` is one of `kind-single`, `kind-multi`, `kubeadm-single`, or
+`kubeadm-multi`.
 
 8. `git commit`
 9. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready

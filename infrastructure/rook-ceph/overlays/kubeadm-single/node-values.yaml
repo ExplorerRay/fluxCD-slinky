@@ -1,0 +1,10 @@
+---
+# Per-variant OSD node placement, merged over the shared values via a second
+# HelmRelease valuesFrom entry (Helm replaces the whole nodes list).
+# The node name MUST match the Kubernetes node hostname for this variant.
+cephClusterSpec:
+  storage:
+    nodes:
+      - name: "node1"  # matches bootstrap/kubespray/inventory/single.yml; loop device via bootstrap/rook-ceph systemd unit
+        devices:
+          - name: "/dev/loop100"  # loopback device created at boot; see bootstrap/rook-ceph

@@ -1,0 +1,72 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cert-manager
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./infrastructure/cert-manager/overlays/kind
+  prune: true
+  force: false
+  wait: true
+  timeout: 5m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  dependsOn:
+    - name: flux-cluster-repositories
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: mariadb-operator
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./infrastructure/mariadb-operator/overlays/kind
+  prune: true
+  force: false
+  wait: true
+  timeout: 5m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  dependsOn:
+    - name: cert-manager
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: rook-ceph
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./infrastructure/rook-ceph/overlays/kind-multi
+  prune: true
+  force: false
+  wait: true
+  timeout: 10m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  dependsOn:
+    - name: flux-cluster-repositories
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: freeipa
+  namespace: flux-system
+spec:
+  interval: 10m0s
+  path: ./infrastructure/freeipa/overlays/kind
+  prune: true
+  force: false
+  wait: true
+  timeout: 15m0s
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  dependsOn:
+    - name: rook-ceph

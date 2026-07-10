@@ -6,7 +6,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/cert-manager/overlays/kubeadm
+  path: ./infrastructure/cert-manager/overlays/kind
   prune: true
   force: false
   wait: true
@@ -24,7 +24,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/mariadb-operator/overlays/kubeadm
+  path: ./infrastructure/mariadb-operator/overlays/kind
   prune: true
   force: false
   wait: true
@@ -42,7 +42,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/rook-ceph/overlays/kubeadm
+  path: ./infrastructure/rook-ceph/overlays/kind-single
   prune: true
   force: false
   wait: true
@@ -60,7 +60,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/freeipa/overlays/kubeadm
+  path: ./infrastructure/freeipa/overlays/kind
   prune: true
   force: false
   wait: true

@@ -75,7 +75,15 @@ This provisions the kubeadm cluster and installs Calico CNI.
 
 ## Deploy Flux
 
-Follow the [deploy procedure](../../README.md#deploy-procedure) in the root README using `clusters/kubeadm` as the path.
+Follow the [deploy procedure](../../README.md#deploy-procedure) in the root README using `clusters/kubeadm-single` or `clusters/kubeadm-multi` as the path, matching the inventory you provisioned:
+
+- `inventory/single.yml` → Flux path `./clusters/kubeadm-single` (OSD host: `node1`)
+- `inventory/multi.yml` → Flux path `./clusters/kubeadm-multi` (OSD host: `node2`)
+
+Whichever host is the OSD host for your variant, install the `rook-osd-loop`
+systemd unit (`bootstrap/rook-ceph/`) on it — see the [Rook-Ceph loop device
+preparation](../../docs/bootstrap.md#rook-ceph-loop-device-preparation)
+section of the bootstrap guide.
 
 ## Kubernetes Upgrades
 

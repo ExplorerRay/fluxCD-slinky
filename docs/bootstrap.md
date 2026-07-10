@@ -8,9 +8,11 @@ after the target cluster can run normal pods.
 See [bootstrap/kind/README.md](../bootstrap/kind/README.md) for setup instructions.
 
 kind allows you to run Kubernetes clusters in Docker containers, useful for
-local development. You can create single-node clusters using the default CNI,
-or multi-node clusters with a custom configuration file to simulate multiple
-Kubernetes nodes (control-plane and workers).
+local development. Both the single-node and multi-node variants are created
+with `bash bootstrap/kind/setup.sh single` or `bash bootstrap/kind/setup.sh
+multi` — the argument selects the kind config (single control-plane node, or
+control-plane + 2 workers) and the cluster name is always fixed to `kind` so
+node hostnames stay deterministic.
 
 ### Readiness check
 
@@ -22,10 +24,11 @@ kubectl get nodes
 
 ### Flux path
 
-Deploy Flux with the following entrypoint:
+Deploy Flux with the entrypoint matching the variant you created:
 
 ```yaml
-path: ./clusters/kind
+path: ./clusters/kind-single   # single-node kind cluster
+path: ./clusters/kind-multi    # multi-node kind cluster
 ```
 
 ## kubeadm
@@ -33,14 +36,21 @@ path: ./clusters/kind
 See [bootstrap/kubespray/README.md](../bootstrap/kubespray/README.md) for setup instructions.
 
 kubeadm with Kubespray is used to provision Kubernetes clusters on bare metal or
-VMs. `clusters/kubeadm` is the Flux entrypoint for the kubeadm-based cluster.
-Kubespray provisions the cluster and installs Calico before Flux starts.
+VMs. `clusters/kubeadm-single` and `clusters/kubeadm-multi` are the Flux
+entrypoints for the kubeadm-based cluster variants. Kubespray provisions the
+cluster and installs Calico before Flux starts.
 
 Kubespray clusters can range from single-node (with control-plane, etcd, and
 worker roles on one machine) to multi-node (with separate control-plane and
 worker nodes). Example inventories are provided at
 `bootstrap/kubespray/inventory/single.yml` (one schedulable node) and
 `bootstrap/kubespray/inventory/multi.yml` (separate control-plane and workers).
+They map to Flux paths and OSD hosts as follows:
+
+| Inventory     | Flux path              | OSD host |
+| ------------- | ----------------------- | -------- |
+| `single.yml`  | `./clusters/kubeadm-single` | `node1`  |
+| `multi.yml`   | `./clusters/kubeadm-multi`  | `node2`  |
 
 ### Calico network plugin
 
@@ -73,10 +83,11 @@ kubectl -n kube-system get pods
 
 ### Flux path
 
-Deploy Flux with the following entrypoint:
+Deploy Flux with the entrypoint matching the inventory you provisioned:
 
 ```yaml
-path: ./clusters/kubeadm
+path: ./clusters/kubeadm-single   # inventory/single.yml
+path: ./clusters/kubeadm-multi    # inventory/multi.yml
 ```
 
 ## Rook-Ceph loop device preparation
@@ -116,23 +127,36 @@ with `losetup`, ordered `Before=kubelet.service`. See
 
 ### kind: setup step
 
-`bootstrap/kind/setup.sh` creates the sparse file and runs `losetup
-/dev/loop100` on the host before `kind create cluster`. The loop device and its
-backing image are mounted into the kind worker node via `extraMounts` in
-`bootstrap/kind/kind-config.yaml`. Re-running `setup.sh` after a reboot
-re-attaches the device idempotently.
+`bootstrap/kind/setup.sh <single|multi>` creates the sparse file and runs
+`losetup /dev/loop100` on the host before `kind create cluster`. The loop
+device and its backing image are mounted into the node that hosts the OSD via
+`extraMounts` in `bootstrap/kind/kind-config-single.yaml` (the sole
+control-plane node) or `bootstrap/kind/kind-config-multi.yaml` (a worker
+node). Re-running `setup.sh` after a reboot re-attaches the device
+idempotently.
 
 ### Node hostname
 
-After the cluster is up, set the OSD node name in the overlay values to match
-the real node hostname:
+Each cluster entrypoint variant already bakes in a deterministic OSD node
+hostname, so no manual edit is normally required:
+
+| Variant           | OSD node hostname   |
+| ----------------- | -------------------- |
+| `kind-single`      | `kind-control-plane` |
+| `kind-multi`       | `kind-worker`         |
+| `kubeadm-single`   | `node1`               |
+| `kubeadm-multi`    | `node2`               |
+
+These come from `infrastructure/rook-ceph/overlays/<variant>/node-values.yaml`,
+which is layered on top of the shared `overlays/kind` or `overlays/kubeadm`
+values via a second HelmRelease `valuesFrom` entry. Only custom setups —
+a kubespray inventory that uses different hostnames than `node1`/`node2`, or a
+kind cluster created under a different `--name` — need to edit the relevant
+`node-values.yaml` to match the real node hostname:
 
 ```sh
 kubectl get nodes -o name
 ```
-
-Edit `infrastructure/rook-ceph/overlays/<cluster>/values.yaml` and replace
-`CHANGEME-node-hostname` under `cephClusterSpec.storage.nodes[].name`.
 
 ## FreeIPA
 

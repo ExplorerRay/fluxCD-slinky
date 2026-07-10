@@ -2,29 +2,11 @@
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: cert-manager
+  name: slurm-operator
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/cert-manager/overlays/kind
-  prune: true
-  force: false
-  wait: true
-  timeout: 5m0s
-  sourceRef:
-    kind: GitRepository
-    name: flux-system
-  dependsOn:
-    - name: flux-cluster-repositories
----
-apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: mariadb-operator
-  namespace: flux-system
-spec:
-  interval: 10m0s
-  path: ./infrastructure/mariadb-operator/overlays/kind
+  path: ./applications/slurm-operator/overlays/kind
   prune: true
   force: false
   wait: true
@@ -38,11 +20,11 @@ spec:
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: rook-ceph
+  name: slurm-database
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/rook-ceph/overlays/kind
+  path: ./applications/slurm-database/overlays/kind
   prune: true
   force: false
   wait: true
@@ -51,22 +33,23 @@ spec:
     kind: GitRepository
     name: flux-system
   dependsOn:
-    - name: flux-cluster-repositories
+    - name: mariadb-operator
+    - name: rook-ceph
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: freeipa
+  name: slurm
   namespace: flux-system
 spec:
   interval: 10m0s
-  path: ./infrastructure/freeipa/overlays/kind
+  path: ./applications/slurm/overlays/kind
   prune: true
   force: false
-  wait: true
-  timeout: 15m0s
   sourceRef:
     kind: GitRepository
     name: flux-system
   dependsOn:
-    - name: rook-ceph
+    - name: slurm-operator
+    - name: slurm-database
+    - name: freeipa

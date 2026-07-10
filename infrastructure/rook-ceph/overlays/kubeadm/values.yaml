@@ -1,9 +1,15 @@
 ---
-# Values for the rook-ceph-cluster Helm chart (kubeadm cluster).
+# Values for the rook-ceph-cluster Helm chart, shared by both kubeadm variants
+# (kubeadm-single, kubeadm-multi).
 #
 # Dev-grade, single-node Ceph: one mon, one mgr, one OSD backed by a loopback
 # device over a sparse file (/dev/loop100). BLOCK-ONLY: exposes a single
 # ceph-block RBD StorageClass set as the cluster default. No CephFS, no RGW.
+#
+# The OSD node placement (cephClusterSpec.storage.nodes) is NOT set here — it
+# differs per variant and is supplied by a second HelmRelease valuesFrom entry
+# layered on top by overlays/kubeadm-single or overlays/kubeadm-multi (see
+# their node-values.yaml).
 #
 # Storage upgrade path: once >=3 real nodes with real disks exist, replace the
 # /dev/loop100 device entry below with real disk/LV names, bump
@@ -54,13 +60,8 @@ cephClusterSpec:
   storage:
     useAllNodes: false
     useAllDevices: false
-    nodes:
-      # The node name MUST match the Kubernetes node hostname.
-      # Set this to the output of: kubectl get nodes -o name
-      # (kubeadm and kind clusters have different node hostnames.)
-      - name: "CHANGEME-node-hostname"  # CHANGEME: kubeadm k8s node hostname
-        devices:
-          - name: "/dev/loop100"  # loopback device created at boot; see bootstrap/rook-ceph
+    # nodes list is supplied per-variant via the overlay's node-values.yaml
+    # (overlays/kubeadm-single, overlays/kubeadm-multi).
 
 # BLOCK-ONLY: one replicated pool exposing the default ceph-block StorageClass.
 cephBlockPools:

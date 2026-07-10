@@ -8,40 +8,42 @@
 
 ### Create cluster
 
+Both variants are created with `bootstrap/kind/setup.sh`, which also prepares
+the Rook-Ceph loop device (`/dev/loop100`) before `kind create cluster`. The
+cluster name is always `kind`, so node hostnames stay deterministic
+(`kind-control-plane`, `kind-worker`).
+
 #### Single-node cluster
 
-```bash
-kind create cluster --name kind
-```
+Uses `bootstrap/kind/kind-config-single.yaml` (1 control-plane node). kind
+automatically makes the sole node schedulable, and it hosts the OSD — so this
+variant now needs the config file and loop device too:
 
-No config file needed — uses default kindnet CNI.
+```bash
+bash bootstrap/kind/setup.sh single
+```
 
 #### Multi-node cluster
 
-Uses `bootstrap/kind/kind-config.yaml` (1 control-plane + 2 workers):
+Uses `bootstrap/kind/kind-config-multi.yaml` (1 control-plane + 2 workers; one
+worker hosts the OSD):
 
 ```bash
-bash bootstrap/kind/setup.sh
+bash bootstrap/kind/setup.sh multi
 ```
 
-Optional: specify cluster name (default: `kind`)
-```bash
-bash bootstrap/kind/setup.sh my-cluster-name
-```
+Running `bash bootstrap/kind/setup.sh` with no argument defaults to `multi`.
 
 ### Deploy Flux
 
-Follow the [deploy procedure](../../README.md#deploy-procedure) in the root README using `clusters/kind` as the path.
+Follow the [deploy procedure](../../README.md#deploy-procedure) in the root
+README, using `clusters/kind-single` as the path for the single-node variant or
+`clusters/kind-multi` for the multi-node variant.
 
 ## Teardown
 
 ```bash
 kind delete cluster --name kind
-```
-
-For custom cluster name:
-```bash
-kind delete cluster --name <cluster-name>
 ```
 
 ## Notes
