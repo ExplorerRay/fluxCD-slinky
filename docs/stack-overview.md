@@ -10,6 +10,7 @@ stack, managed by FluxCD.
 |---|---|---|
 | cert-manager | `cert-manager` | TLS certificate management; required by the Slurm operator |
 | rook-ceph | `rook-ceph` | Rook-managed single-node Ceph providing the `ceph-block` default StorageClass |
+| freeipa | `freeipa` | In-cluster FreeIPA identity server; Slurm authenticates via SSSD/LDAPS |
 | mariadb-operator | `mariadb` | Kubernetes operator that manages MariaDB instances via CRDs |
 | slurm-database | `slurm` | MariaDB instance storing Slurm accounting data (`slurm_acct_db`) |
 | slurm-operator | `slinky` | SlinkyProject operator that reconciles Slurm cluster CRDs |
@@ -22,14 +23,19 @@ flux-cluster-repositories
   ├─ cert-manager
   │    └─ mariadb-operator
   │         └─ slurm-database ──┐
-  │    └─ slurm-operator ───────┴─ slurm
-  └─ rook-ceph ─────────────────── slurm-database
+  │    └─ slurm-operator ───────┼─ slurm
+  └─ rook-ceph ─────────────────┤
+       ├─ slurm-database         │
+       └─ freeipa ───────────────┘
 ```
 
 `rook-ceph` reconciles directly off `flux-cluster-repositories` (in parallel
 with `cert-manager`) and provides the default `ceph-block` StorageClass.
 `slurm-database` depends on both `mariadb-operator` and `rook-ceph` because its
-PVC requires the default StorageClass.
+PVC requires the default StorageClass. `freeipa` depends on `rook-ceph` (its
+`/data` PVC uses `ceph-block`), and `slurm` in turn depends on `freeipa` so the
+FreeIPA server exists before login/compute pods try to authenticate against it
+over LDAPS.
 
 Flux enforces this order via `dependsOn` on each Kustomization.
 
@@ -45,8 +51,7 @@ Verify with:
 
 ```sh
 kubectl -n slurm get pods
-ssh -p 32222 root@<node-ip>
-sinfo   # should list partitions and worker nodes
+kubectl -n slurm exec <login-pod> -- sinfo   # should list partitions and worker nodes
 ```
 
 ## Storage upgrade path (dev -> prod)

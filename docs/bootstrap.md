@@ -134,4 +134,60 @@ kubectl get nodes -o name
 Edit `infrastructure/rook-ceph/overlays/<cluster>/values.yaml` and replace
 `CHANGEME-node-hostname` under `cephClusterSpec.storage.nodes[].name`.
 
+## FreeIPA
+
+The in-cluster FreeIPA identity server (`infrastructure/freeipa`) is a
+hand-rolled StatefulSet reachable at `ipa.freeipa.svc.cluster.local` (realm
+`FREEIPA.SVC.CLUSTER.LOCAL`). Slurm's login and compute pods authenticate
+against it over LDAPS via SSSD.
+
+Flux brings the components up on its own (FreeIPA, then slurm, by dependency
+order). Only the manual actions Flux cannot perform are listed below. The dev
+credentials are already committed (plaintext) in the per-cluster `secret.yaml`
+files — change them there if desired before deploying.
+
+### Runtime: privileged pod (dev only)
+
+The FreeIPA image runs systemd as PID 1, so it needs cgroup and mount access. To
+keep this simple, the StatefulSet runs as a **privileged pod**. This works on
+any node that already runs `slurmd` — no user namespaces, no
+`UserNamespacesSupport` feature gate, and no special containerd
+cgroup-delegation config. There is **nothing extra to set up** here.
+
+The trade-off is reduced isolation (container root ≈ host root), which is why
+this is DEV ONLY (see the [README](../README.md) security note). The more secure
+upstream alternative — `hostUsers: false` (user namespaces) + a read-only root
+filesystem — avoids privileged but requires a recent containerd configured to
+delegate the cgroup hierarchy into the user namespace (see
+freeipa/freeipa-container `tests/containerd-2.1-config.toml`). Switch to that
+model for production.
+
+1. **Extract the FreeIPA CA into the slurm namespace.** Once FreeIPA is healthy
+   (`kubectl -n freeipa exec sts/ipa -- ipactl status`; the first install takes
+   several minutes), copy its CA into the `freeipa-ca` ConfigMap. SSSD validates
+   the LDAPS certificate against this CA (`ldap_tls_reqcert = demand`), and the
+   ConfigMap is not a git manifest, so it must be created by hand. It MUST exist
+   before the slurm pods start, or the CA volume mount leaves them Pending:
+
+   ```sh
+   kubectl -n freeipa exec sts/ipa -- cat /etc/ipa/ca.crt \
+     | kubectl -n slurm create configmap freeipa-ca --from-file=ca.crt=/dev/stdin
+   ```
+
+2. **Create users and groups in the web UI.** FreeIPA starts empty, so Slurm
+   cannot resolve anyone yet. The management console is exposed (DEV ONLY) via
+   the `ipa-web` NodePort on **30443**. FreeIPA enforces a referer/host check
+   against its FQDN, so browse it by that name rather than the raw node IP — add
+   to your client `/etc/hosts`:
+
+   ```
+   <node-ip>  ipa.freeipa.svc.cluster.local
+   ```
+
+   then open `https://ipa.freeipa.svc.cluster.local:30443/ipa/ui`, log in as
+   `admin` (dev password from the FreeIPA secret), and add users/groups under
+   **Identity**. Trust the FreeIPA CA (`ca.crt`) to avoid the TLS warning. On
+   kind (where NodePorts aren't host-mapped by default) use `kubectl -n freeipa
+   port-forward sts/ipa 30443:443` and browse `https://…:30443/ipa/ui` instead.
+
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

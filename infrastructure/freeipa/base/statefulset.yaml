@@ -1,0 +1,137 @@
+---
+# In-cluster FreeIPA identity server (single replica). Hand-rolled because there
+# is no maintained FreeIPA Helm chart. The image runs systemd as PID 1
+# (freeipa-container), so it needs the systemd-in-container accommodations below.
+#
+# DEV ONLY: this runs as a PRIVILEGED pod. That is the simplest way to give
+# systemd + FreeIPA the cgroup/mount access they need, and it works on any node
+# that already runs slurmd — no user namespaces, no UserNamespacesSupport
+# feature gate, no special containerd cgroup-delegation config. The trade-off is
+# reduced isolation (container root ~= host root). The more secure upstream
+# alternative (hostUsers: false + read-only rootfs) needs extra node/containerd
+# setup; see the README security note.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ipa
+  namespace: freeipa
+spec:
+  serviceName: ipa
+  replicas: 1
+  selector:
+    matchLabels:
+      app: freeipa
+  template:
+    metadata:
+      labels:
+        app: freeipa
+    spec:
+      # FreeIPA needs its own FQDN to resolve to itself. Combined with the
+      # headless Service, ipa.freeipa.svc.cluster.local resolves via CoreDNS.
+      hostname: ipa
+      subdomain: ipa
+      containers:
+        - name: freeipa
+          # Pinned Rocky 9 build of the upstream freeipa-server image.
+          image: quay.io/freeipa/freeipa-server:rocky-9-4.13.1
+          # No command/args: the image's systemd init runs ipa-server-install
+          # from IPA_SERVER_INSTALL_OPTS. Passing `ipa-server-install` as args
+          # would replace systemd (PID 1) and break the install.
+          env:
+            # Sets both the Directory Manager and admin passwords.
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: freeipa-admin
+                  key: password
+            # The server FQDN (matches the headless Service DNS name).
+            - name: IPA_SERVER_HOSTNAME
+              value: ipa.freeipa.svc.cluster.local
+            # Arguments passed straight to ipa-server-install.
+            #   -U                unattended
+            #   -r <REALM>        Kerberos realm
+            #   --domain          IPA primary DNS domain
+            #   --no-host-dns     do not check host DNS during install
+            #   --no-ntp          do not configure chrony/NTP
+            # NOTE: integrated DNS is intentionally OFF — no --setup-dns.
+            - name: IPA_SERVER_INSTALL_OPTS
+              value: >-
+                -U
+                -r FREEIPA.SVC.CLUSTER.LOCAL
+                --domain=freeipa.svc.cluster.local
+                --no-host-dns
+                --no-ntp
+            # Do not try to update DNS A records (integrated DNS is off).
+            - name: IPA_SERVER_IP
+              value: no-update
+          securityContext:
+            # DEV ONLY: privileged gives systemd the cgroup + mount access it
+            # needs without user namespaces or containerd delegation config.
+            privileged: true
+          ports:
+            - containerPort: 389
+              protocol: TCP
+            - containerPort: 636
+              protocol: TCP
+            - containerPort: 88
+              protocol: TCP
+            - containerPort: 88
+              protocol: UDP
+            - containerPort: 464
+              protocol: TCP
+            - containerPort: 464
+              protocol: UDP
+            - containerPort: 80
+              protocol: TCP
+            - containerPort: 443
+              protocol: TCP
+          volumeMounts:
+            # Persistent IPA state (config, LDAP DB, CA, certs).
+            - name: data
+              mountPath: /data
+            # systemd needs a writable cgroup hierarchy.
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+            # systemd + services need writable /run and /tmp.
+            - name: run
+              mountPath: /run
+            - name: tmp
+              mountPath: /tmp
+            # 389-ds needs shared memory.
+            - name: dev-shm
+              mountPath: /dev/shm
+          # First install takes several minutes; probe generously.
+          readinessProbe:
+            exec:
+              command:
+                - /usr/bin/systemctl
+                - status
+                - ipa
+            initialDelaySeconds: 120
+            timeoutSeconds: 10
+            periodSeconds: 15
+            failureThreshold: 40
+      volumes:
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+        - name: run
+          emptyDir:
+            medium: Memory
+        - name: tmp
+          emptyDir:
+            medium: Memory
+        - name: dev-shm
+          emptyDir:
+            medium: Memory
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: ceph-block
+        resources:
+          requests:
+            storage: 10Gi

@@ -1,0 +1,26 @@
+---
+# ⚠️  DEV ONLY — external exposure of the FreeIPA web UI (IdM console) over
+# NodePort. This is a second Service (the primary `ipa` Service stays headless
+# ClusterIP for in-cluster SSSD/LDAPS). For production, front it with an Ingress
+# / LoadBalancer + real TLS instead of a NodePort.
+#
+# Access: https://<node-ip>:30443/ipa/ui  — but FreeIPA enforces a referer/host
+# check against its FQDN, so point your client at the FQDN, e.g. add
+#   <node-ip>  ipa.freeipa.svc.cluster.local
+# to /etc/hosts and browse https://ipa.freeipa.svc.cluster.local:30443/ipa/ui
+# (trust the FreeIPA CA to avoid the TLS warning).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ipa-web
+  namespace: freeipa
+spec:
+  type: NodePort
+  selector:
+    app: freeipa
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 443
+      nodePort: 30443

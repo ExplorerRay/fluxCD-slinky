@@ -1,6 +1,20 @@
 # fluxCD-slinky
 Custom IaC project for slinky-related projects
 
+## ⚠️ Development only — not production ready
+
+This is a proof-of-concept. Some secrets are committed to git **in plaintext**
+for convenience, including the FreeIPA admin / Directory Manager password and
+the SSSD bind password (`infrastructure/freeipa/overlays/*/secret.yaml` and
+`applications/slurm/overlays/*/secret.yaml`). The FreeIPA server runs as a
+**privileged pod** (simplest way to run systemd-in-container). The storage layer
+is likewise dev-grade (single-node Ceph on a loopback file, no replication).
+
+**Do not deploy this as-is anywhere real.** Before any production use, at
+minimum: move secrets out of git (e.g. SOPS/age or sealed-secrets), rotate all
+credentials, run FreeIPA unprivileged (user namespaces + read-only rootfs), and
+back storage with real disks and replication.
+
 ## Cluster model
 
 This repository manages more than one Kubernetes cluster with Flux:

@@ -1,0 +1,47 @@
+---
+# Headless Service. clusterIP: None gives the StatefulSet pod a stable DNS name
+# ipa-0.ipa.freeipa.svc.cluster.local and the service name
+# ipa.freeipa.svc.cluster.local, which is the FreeIPA server FQDN / realm host.
+# No port 53: integrated DNS is disabled (--no-host-dns, no --setup-dns).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ipa
+  namespace: freeipa
+spec:
+  clusterIP: None
+  selector:
+    app: freeipa
+  ports:
+    - name: ldap
+      port: 389
+      protocol: TCP
+      targetPort: 389
+    - name: ldaps
+      port: 636
+      protocol: TCP
+      targetPort: 636
+    - name: kerberos-tcp
+      port: 88
+      protocol: TCP
+      targetPort: 88
+    - name: kerberos-udp
+      port: 88
+      protocol: UDP
+      targetPort: 88
+    - name: kpasswd-tcp
+      port: 464
+      protocol: TCP
+      targetPort: 464
+    - name: kpasswd-udp
+      port: 464
+      protocol: UDP
+      targetPort: 464
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 80
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 443
