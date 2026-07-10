@@ -46,14 +46,11 @@ See:
 ## Deploy Procedure
 
 1. Provision a Kubernetes cluster — see the [bootstrap guide](docs/bootstrap.md) for kind or kubeadm setup.
-2. Create a Personal Access Token in GitHub following [this guide](https://fluxcd.io/flux/installation/bootstrap/github/#github-pat)
-3. `kubectl create namespace flux-system`
-4. `kubectl -n flux-system create secret generic flux-system --from-literal=username=<github_username> --from-literal=password=<personal_access_token>`
-5. `cd clusters/<cluster_name>/flux-system/`
-6. Create `gotk-components.yaml`
+2. `cd clusters/<cluster_name>/flux-system/`
+3. Create `gotk-components.yaml`
    - With Flux CLI: `flux install --export > gotk-components.yaml`
    - Without Flux CLI: `curl -sL https://github.com/fluxcd/flux2/releases/latest/download/install.yaml > gotk-components.yaml`
-7. Create `gotk-sync.yaml`
+4. Create `gotk-sync.yaml`
 
 ```yaml
 ---
@@ -68,8 +65,6 @@ spec:
     branch: main
   interval: 1m0s
   timeout: 60s
-  secretRef:
-    name: flux-system
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -87,10 +82,11 @@ spec:
 ```
 
 `<cluster_name>` is one of `kind-single`, `kind-multi`, `kubeadm-single`, or
-`kubeadm-multi`.
+`kubeadm-multi`. The repository is public, so Flux fetches it anonymously — no
+GitHub PAT or `flux-system` secret is needed.
 
-8. `git commit`
-9. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready
-10. `kubectl apply -f gotk-sync.yaml` and wait for the Kustomization to be ready
+5. `git commit`
+6. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready (this also creates the `flux-system` namespace)
+7. `kubectl apply -f gotk-sync.yaml` and wait for the Kustomization to be ready
 
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->
