@@ -52,3 +52,4 @@ spec:
   dependsOn:
     - name: slurm-operator
     - name: slurm-database
+    - name: freeipa

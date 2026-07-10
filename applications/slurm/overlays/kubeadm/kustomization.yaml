@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: slurm
 resources:
   - ../../base
+  - secret.yaml
 generatorOptions:
   disableNameSuffixHash: true
 configMapGenerator:
