@@ -18,6 +18,13 @@ if [[ ! -f "$IMG" ]]; then
   truncate -s "$SIZE" "$IMG"
 fi
 
+# The device node vanishes on reboot (devtmpfs is rebuilt) and the kernel only
+# pre-creates low-numbered loop nodes; recreate it (block device, major 7 =
+# loop, minor from the device name) or losetup fails with ENOENT.
+if [[ ! -e "$LOOP" ]]; then
+  mknod "$LOOP" b 7 "${LOOP#/dev/loop}"
+fi
+
 # Attach the loop device if it is not already backed by this image.
 if ! losetup "$LOOP" >/dev/null 2>&1; then
   losetup "$LOOP" "$IMG"
