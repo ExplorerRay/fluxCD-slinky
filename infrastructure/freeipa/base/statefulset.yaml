@@ -68,6 +68,16 @@ spec:
             # DEV ONLY: privileged gives systemd the cgroup + mount access it
             # needs without user namespaces or containerd delegation config.
             privileged: true
+          # RHEL IdM sizing docs recommend 4 GB RAM for the smallest deployment
+          # tier (up to 10,000 users); install-time (Dogtag CA + 389-ds) is the
+          # peak. The limit must also cover the memory-backed emptyDirs below
+          # (/run, /tmp, /dev/shm), which count against it.
+          # https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/installing_identity_management/preparing-the-system-for-ipa-server-installation_installing-identity-management
+          resources:
+            requests:
+              memory: "2Gi"
+            limits:
+              memory: "4Gi"
           ports:
             - containerPort: 389
               protocol: TCP

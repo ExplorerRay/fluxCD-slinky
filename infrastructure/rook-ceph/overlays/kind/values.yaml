@@ -40,13 +40,15 @@ cephClusterSpec:
   dashboard:
     enabled: true
   # Smaller requests/limits than kubeadm for the local Docker-backed node.
+  # mgr matches the rook-ceph-cluster chart defaults — anything lower gets the
+  # mgr OOM-killed while it is still loading its python modules.
   resources:
     mgr:
       requests:
         cpu: "100m"
-        memory: "128Mi"
+        memory: "512Mi"
       limits:
-        memory: "384Mi"
+        memory: "1Gi"
     mon:
       requests:
         cpu: "100m"

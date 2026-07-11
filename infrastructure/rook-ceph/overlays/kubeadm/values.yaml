@@ -38,13 +38,16 @@ cephClusterSpec:
   dashboard:
     enabled: true
   # Modest resource requests/limits for the single constrained node.
+  # mgr sits above the rook-ceph-cluster chart defaults (and above the kind
+  # overlay) since kubeadm nodes are real machines — the chart-default 1Gi
+  # limit is the floor below which the mgr gets OOM-killed at startup.
   resources:
     mgr:
       requests:
         cpu: "100m"
-        memory: "256Mi"
+        memory: "1Gi"
       limits:
-        memory: "512Mi"
+        memory: "2Gi"
     mon:
       requests:
         cpu: "100m"
