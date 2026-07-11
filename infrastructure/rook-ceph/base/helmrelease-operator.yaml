@@ -15,3 +15,9 @@ spec:
         kind: HelmRepository
         name: rook-ceph
         namespace: flux-system
+  values:
+    # Every cluster variant backs its OSD with a loopback device
+    # (/dev/loop100); the operator rejects loop devices unless this test-only
+    # opt-in is set (default false — the osd-prepare job then skips the device
+    # with "unsupported diskType loop").
+    allowLoopDevices: true
