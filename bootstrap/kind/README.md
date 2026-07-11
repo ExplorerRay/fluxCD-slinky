@@ -42,8 +42,37 @@ README, using `clusters/kind-single` as the path for the single-node variant or
 
 ## Teardown
 
+Unmap any kernel RBD devices BEFORE deleting the cluster. The kernel Ceph
+client lives in the node containers' network namespaces; once those are
+deleted, stale mappings can neither reach the (gone) cluster nor be removed —
+they hang `ceph-volume raw list` on the next cluster's OSD prepare, and only a
+host reboot clears them. Then wipe the OSD loop device so the next cluster
+gets a clean disk:
+
 ```bash
+# /sys/bus/rbd is host-kernel-global; any node with the rw /sys remount works.
+# Resolve the node dynamically — the single variant has no kind-worker.
+node=$(kind get nodes --name kind | head -n1)
+for id in $(ls /sys/bus/rbd/devices/ 2>/dev/null); do
+  docker exec "$node" sh -c "echo '$id force' > /sys/bus/rbd/remove_single_major"
+done
 kind delete cluster --name kind
+```
+
+A force-unmap can still hang forever if the RBD image holds a mounted
+filesystem with dirty journal I/O and the Ceph daemons are already gone — the
+`osd_request_timeout=60` StorageClass map option bounds this to ~60s for
+devices mapped by the CSI driver. If a removal does wedge (writer stuck in
+D-state), only a host reboot clears it.
+
+Stale host state (`/var/lib/rook`: old mon store + keys, ceph config, OSD
+image) is removed automatically by `setup.sh` on the next run — a new mon
+adopting the old store would fail auth with "RADOS permission denied
+(errno 13)". To reclaim the space immediately without creating a new cluster:
+
+```bash
+sudo losetup -d /dev/loop100
+sudo rm -rf /var/lib/rook
 ```
 
 ## Notes

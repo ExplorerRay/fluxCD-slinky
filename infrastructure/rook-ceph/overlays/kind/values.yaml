@@ -83,6 +83,16 @@ cephBlockPools:
       parameters:
         imageFormat: "2"
         imageFeatures: layering
+        # Fail krbd I/O with EIO after 60s instead of retrying forever. On
+        # kind, deleting the cluster orphans any still-mapped RBD devices in
+        # the shared host kernel; without a timeout, reads on them hang in
+        # D-state (which wedges device scans and force-unmap) and only a host
+        # reboot recovers. See the teardown order in bootstrap/kind/README.md
+        # — this is the safety net for when that ordering is missed. Must live
+        # in `parameters` (the CSI driver reads it from the StorageClass
+        # parameters map); a `mapOptions` key at the storageClass level is not
+        # rendered by the chart and is silently ignored.
+        mapOptions: osd_request_timeout=60
         # CSI credentials for provision/expand/node-stage. These come from the
         # chart's default parameters and MUST be restored when overriding the
         # parameters map (Helm replaces it wholesale) — without them the

@@ -13,4 +13,14 @@ nodes:
       - hostPath: /var/lib/rook
         containerPath: /var/lib/rook
         propagation: HostToContainer
+      # Host /dev (devtmpfs) so device nodes for freshly mapped RBD volumes
+      # appear in the node; kind's own /dev is a static tmpfs and `rbd map`
+      # fails with "/dev/rbdX is not accessible" without this.
+      - hostPath: /dev
+        containerPath: /dev
+        propagation: HostToContainer
   - role: worker
+    extraMounts:
+      - hostPath: /dev
+        containerPath: /dev
+        propagation: HostToContainer
