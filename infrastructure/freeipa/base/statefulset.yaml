@@ -3,13 +3,29 @@
 # is no maintained FreeIPA Helm chart. The image runs systemd as PID 1
 # (freeipa-container), so it needs the systemd-in-container accommodations below.
 #
-# DEV ONLY: this runs as a PRIVILEGED pod. That is the simplest way to give
-# systemd + FreeIPA the cgroup/mount access they need, and it works on any node
-# that already runs slurmd — no user namespaces, no UserNamespacesSupport
-# feature gate, no special containerd cgroup-delegation config. The trade-off is
-# reduced isolation (container root ~= host root). The more secure upstream
-# alternative (hostUsers: false + read-only rootfs) needs extra node/containerd
-# setup; see the README security note.
+# DEV ONLY: this runs PRIVILEGED but inside a user namespace (hostUsers:
+# false). Privileged gives systemd + FreeIPA (389-ds, Dogtag CA) the mount and
+# cgroup access they need; the user namespace confines those capabilities so
+# they cannot reach host-global kernel state.
+#
+# The user namespace is LOAD-BEARING, not just hardening. SELinux policy is a
+# single, non-namespaced, kernel-global resource. systemd (PID 1) always calls
+# libselinux selinux_init_load_policy(), which UNCONDITIONALLY does
+# `mount("selinuxfs", "/sys/fs/selinux", ...)` and reloads policy — masking
+# that path with a tmpfs does not help, because the mount stacks a fresh live
+# selinuxfs on top and succeeds whenever the process holds CAP_SYS_ADMIN over
+# the host. On a privileged host-user pod this reloads the IMAGE's policy into
+# the HOST kernel, unmapping the host's container-* types and breaking
+# docker/containerd host-wide (observed: docker.sock became unlabeled_t, every
+# docker command denied). selinuxfs is not a userns-mountable filesystem, so
+# under hostUsers: false that mount fails with EPERM, systemd logs "Unable to
+# load SELinux policy. Ignoring." and boots normally — the host is untouched.
+# On non-SELinux hosts (Debian/AppArmor) there is no policy to touch, so this
+# is a clean no-op there too.
+#
+# This mirrors how freeipa-container's own rootless-podman CI runs. Needs
+# Kubernetes user-namespace support (GA since v1.33; kindest/node v1.36 has it)
+# and cgroup v2 on the host. See the README security note.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -30,34 +46,21 @@ spec:
       # headless Service, ipa.freeipa.svc.cluster.local resolves via CoreDNS.
       hostname: ipa
       subdomain: ipa
+      # Run the pod in its own user namespace. Confines the privileged
+      # container's capabilities so they cannot mutate host-global kernel state
+      # (see the SELinux note above). Container UID 0 maps to an unprivileged
+      # host UID.
+      hostUsers: false
       containers:
         - name: freeipa
           # Pinned Rocky 9 build of the upstream freeipa-server image.
           image: quay.io/freeipa/freeipa-server:rocky-9-4.13.1
-          # Wrap the image entrypoint (/usr/local/sbin/init — the systemd init
-          # that runs ipa-server-install from IPA_SERVER_INSTALL_OPTS; never
-          # pass `ipa-server-install` as args, it would replace systemd as
-          # PID 1) to mask selinuxfs first. Privileged pods share the host
-          # kernel: on an SELinux host (RHEL family), systemd would otherwise
-          # mount a real selinuxfs and ipa-server-install would load the
-          # IMAGE's SELinux policy into the HOST kernel, unmapping the host's
-          # container-* types and breaking docker/containerd host-wide
-          # (observed: docker.sock became unlabeled_t, every docker command
-          # denied). With a tmpfs covering /sys/fs/selinux, systemd skips
-          # selinuxfs and libselinux reports SELinux disabled in-container.
-          # The directory only exists in sysfs when the host kernel runs
-          # SELinux, so on AppArmor hosts (Debian family) this is a no-op —
-          # unlike a static emptyDir mount at that path, which would fail pod
-          # creation there (mkdir inside sysfs is impossible). `exec` keeps
-          # systemd as PID 1.
-          command:
-            - /bin/sh
-            - -c
-            - |
-              if [ -d /sys/fs/selinux ]; then
-                mount -t tmpfs tmpfs /sys/fs/selinux
-              fi
-              exec /usr/local/sbin/init
+          # No command/args: the image's systemd init (/usr/local/sbin/init)
+          # runs ipa-server-install from IPA_SERVER_INSTALL_OPTS. Passing
+          # `ipa-server-install` as args would replace systemd (PID 1) and
+          # break the install. The user namespace (hostUsers: false above) is
+          # what neutralizes systemd's host SELinux policy reload — see the
+          # header note; no entrypoint wrapper is needed or effective.
           env:
             # Sets both the Directory Manager and admin passwords.
             - name: PASSWORD
@@ -86,8 +89,9 @@ spec:
             - name: IPA_SERVER_IP
               value: no-update
           securityContext:
-            # DEV ONLY: privileged gives systemd the cgroup + mount access it
-            # needs without user namespaces or containerd delegation config.
+            # Privileged for systemd's mount/cgroup needs; confined by the
+            # pod's user namespace (hostUsers: false) so it cannot reach
+            # host-global kernel state.
             privileged: true
           # RHEL IdM sizing docs recommend 4 GB RAM for the smallest deployment
           # tier (up to 10,000 users); install-time (Dogtag CA + 389-ds) is the
@@ -120,9 +124,12 @@ spec:
             # Persistent IPA state (config, LDAP DB, CA, certs).
             - name: data
               mountPath: /data
-            # systemd needs a writable cgroup hierarchy.
-            - name: cgroup
-              mountPath: /sys/fs/cgroup
+            # NOTE: no /sys/fs/cgroup hostPath mount. Under a user namespace
+            # the host cgroup tree would be owned by an unmapped UID and
+            # systemd could not write to it. With cgroup v2 the container
+            # runtime delegates a correctly-owned cgroup subtree at
+            # /sys/fs/cgroup automatically (cgroupns=private), which systemd
+            # uses directly.
             # systemd + services need writable /run and /tmp.
             - name: run
               mountPath: /run
@@ -143,10 +150,6 @@ spec:
             periodSeconds: 15
             failureThreshold: 40
       volumes:
-        - name: cgroup
-          hostPath:
-            path: /sys/fs/cgroup
-            type: Directory
         - name: run
           emptyDir:
             medium: Memory

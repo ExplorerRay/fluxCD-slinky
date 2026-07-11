@@ -7,13 +7,18 @@ This is a proof-of-concept. Some secrets are committed to git **in plaintext**
 for convenience, including the FreeIPA admin / Directory Manager password and
 the SSSD bind password (`infrastructure/freeipa/overlays/*/secret.yaml` and
 `applications/slurm/overlays/*/secret.yaml`). The FreeIPA server runs as a
-**privileged pod** (simplest way to run systemd-in-container). The storage layer
-is likewise dev-grade (single-node Ceph on a loopback file, no replication).
+**privileged pod** (simplest way to run systemd-in-container), but inside a
+**user namespace** (`hostUsers: false`) so those capabilities cannot mutate
+host-global kernel state — without it, the container's systemd reloads its own
+SELinux policy into the shared host kernel and breaks docker/containerd on
+SELinux (RHEL-family) hosts. The storage layer is likewise dev-grade
+(single-node Ceph on a loopback file, no replication).
 
 **Do not deploy this as-is anywhere real.** Before any production use, at
 minimum: move secrets out of git (e.g. SOPS/age or sealed-secrets), rotate all
-credentials, run FreeIPA unprivileged (user namespaces + read-only rootfs), and
-back storage with real disks and replication.
+credentials, tighten FreeIPA further (drop privileged in favour of an explicit
+capability set + read-only rootfs), and back storage with real disks and
+replication.
 
 ## Cluster model
 
