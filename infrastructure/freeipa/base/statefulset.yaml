@@ -34,9 +34,30 @@ spec:
         - name: freeipa
           # Pinned Rocky 9 build of the upstream freeipa-server image.
           image: quay.io/freeipa/freeipa-server:rocky-9-4.13.1
-          # No command/args: the image's systemd init runs ipa-server-install
-          # from IPA_SERVER_INSTALL_OPTS. Passing `ipa-server-install` as args
-          # would replace systemd (PID 1) and break the install.
+          # Wrap the image entrypoint (/usr/local/sbin/init — the systemd init
+          # that runs ipa-server-install from IPA_SERVER_INSTALL_OPTS; never
+          # pass `ipa-server-install` as args, it would replace systemd as
+          # PID 1) to mask selinuxfs first. Privileged pods share the host
+          # kernel: on an SELinux host (RHEL family), systemd would otherwise
+          # mount a real selinuxfs and ipa-server-install would load the
+          # IMAGE's SELinux policy into the HOST kernel, unmapping the host's
+          # container-* types and breaking docker/containerd host-wide
+          # (observed: docker.sock became unlabeled_t, every docker command
+          # denied). With a tmpfs covering /sys/fs/selinux, systemd skips
+          # selinuxfs and libselinux reports SELinux disabled in-container.
+          # The directory only exists in sysfs when the host kernel runs
+          # SELinux, so on AppArmor hosts (Debian family) this is a no-op —
+          # unlike a static emptyDir mount at that path, which would fail pod
+          # creation there (mkdir inside sysfs is impossible). `exec` keeps
+          # systemd as PID 1.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ -d /sys/fs/selinux ]; then
+                mount -t tmpfs tmpfs /sys/fs/selinux
+              fi
+              exec /usr/local/sbin/init
           env:
             # Sets both the Directory Manager and admin passwords.
             - name: PASSWORD
