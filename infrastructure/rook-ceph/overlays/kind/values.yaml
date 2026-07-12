@@ -34,6 +34,16 @@ configOverride: |
   osd_memory_target = 4294967296
 
 cephClusterSpec:
+  # Pin the Ceph image. The rook-ceph-cluster v1.15.x chart defaults to Ceph
+  # v18.2.4, whose mon deterministically deadlocks in OSDMonitor::prepare_update
+  # on ANY `osd pool create`: the dispatch thread blocks holding the Monitor
+  # lock (0 CPU, admin socket dead), so the CephBlockPool never reaches Ready
+  # and every ceph-block PVC stays Pending forever. Plain osdmap writes (e.g.
+  # `osd set noout`) still work — it is specific to pool creation. Fixed in
+  # v18.2.7; verified on kind-multi (pool create hangs on v18.2.4, succeeds on
+  # v18.2.7). Do NOT drop back to v18.2.4.
+  cephVersion:
+    image: quay.io/ceph/ceph:v18.2.7
   mon:
     count: 1
     allowMultiplePerNode: true
