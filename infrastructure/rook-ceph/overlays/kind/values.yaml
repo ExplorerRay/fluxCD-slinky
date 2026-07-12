@@ -26,9 +26,12 @@ monitoring:
   enabled: false
 
 # Cluster-wide ceph.conf overrides. Cap OSD memory on the constrained node.
+# osd_memory_target matches Ceph's own documented default (4GB); 2GB is only
+# the documented floor to never go below, not a recommendation.
+# https://docs.ceph.com/en/reef/start/hardware-recommendations/
 configOverride: |
   [osd]
-  osd_memory_target = 2147483648
+  osd_memory_target = 4294967296
 
 cephClusterSpec:
   mon:
@@ -49,18 +52,24 @@ cephClusterSpec:
         memory: "512Mi"
       limits:
         memory: "1Gi"
+    # mon matches the rook-ceph-cluster chart defaults, same rationale as mgr
+    # above.
     mon:
       requests:
         cpu: "100m"
-        memory: "128Mi"
+        memory: "1Gi"
       limits:
-        memory: "384Mi"
+        memory: "2Gi"
+    # osd request matches the rook-ceph-cluster chart default (4Gi); limit
+    # gives ~1.5x headroom over osd_memory_target, since BlueStore routinely
+    # overshoots the target before cache trimming catches up (same failure
+    # shape mgr had: target == limit leaves no room).
     osd:
       requests:
         cpu: "100m"
-        memory: "512Mi"
+        memory: "4Gi"
       limits:
-        memory: "2Gi"
+        memory: "6Gi"
   storage:
     useAllNodes: false
     useAllDevices: false

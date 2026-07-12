@@ -24,9 +24,12 @@ monitoring:
   enabled: false
 
 # Cluster-wide ceph.conf overrides. Cap OSD memory on the constrained node.
+# osd_memory_target matches Ceph's own documented default (4GB); 2GB is only
+# the documented floor to never go below, not a recommendation.
+# https://docs.ceph.com/en/reef/start/hardware-recommendations/
 configOverride: |
   [osd]
-  osd_memory_target = 2147483648
+  osd_memory_target = 4294967296
 
 cephClusterSpec:
   mon:
@@ -48,18 +51,22 @@ cephClusterSpec:
         memory: "1Gi"
       limits:
         memory: "2Gi"
+    # mon set above the kind overlay's chart-default value (1Gi/2Gi), same
+    # pattern as mgr, since kubeadm nodes are real machines.
     mon:
       requests:
-        cpu: "100m"
-        memory: "256Mi"
+        cpu: "200m"
+        memory: "2Gi"
       limits:
-        memory: "512Mi"
+        memory: "4Gi"
+    # osd set above the kind overlay: limit matches Ceph's documented "~8GB per
+    # BlueStore OSD" advisory, since kubeadm nodes are real machines.
     osd:
       requests:
         cpu: "250m"
-        memory: "1Gi"
+        memory: "6Gi"
       limits:
-        memory: "2Gi"
+        memory: "8Gi"
   storage:
     useAllNodes: false
     useAllDevices: false
