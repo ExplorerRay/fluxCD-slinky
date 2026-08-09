@@ -3,6 +3,68 @@
 ## Prerequisites
 
 - [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation)
+- **At least 16 GiB of RAM on the host** (both variants) — see below.
+
+## Resource requirements
+
+**Give the host at least 16 GiB of RAM.** 8 GiB or 10 GiB does not work, and the
+way it fails is easy to misread as a bug in the stack.
+
+Measured pod memory *requests* for the full stack (kind-multi,
+`kindest/node:v1.36.1`, `ROOK_OSD_SIZE=60G`) total **15.9 GiB**, dominated by
+Rook-Ceph:
+
+| namespace     | requests   |
+| ------------- | ---------- |
+| `rook-ceph`   | 13114 Mi   |
+| `freeipa`     | 2048 Mi    |
+| `kube-system` | 390 Mi     |
+| `flux-system` | 384 Mi     |
+| **total**     | **15936 Mi** |
+
+The individual heavyweights are `rook-ceph-osd-0` at 4196 Mi (the chart sets
+`osd_memory_target = 4Gi`), `ipa-0` at 2048 Mi, `rook-ceph-mon-a` at 1124 Mi,
+four `csi-*-provisioner` pods at 1024 Mi each, the `csi-*plugin` DaemonSets at
+640 Mi *per node*, and `rook-ceph-mgr-a` at 612 Mi.
+
+Note these are *requests*, not usage — actual consumption is far lower (a
+healthy single-node cluster sits around 7 GiB). Scheduling is what fails, not
+the kernel OOM killer, so the symptoms are misleading.
+
+### What too little RAM looks like
+
+Observed on a 10 GiB VM running the single-node variant: memory requests reach
+99% of allocatable, and `rook-ceph-operator` — a **128 Mi** pod — cannot
+schedule. From there it cascades:
+
+1. `rook-ceph-operator` → `FailedScheduling: Insufficient memory`
+2. → `cephblockpool/ceph-blockpool` stays `Progressing`, never created
+3. → every `ceph-block` PVC fails `ProvisioningFailed: pool (ceph-blockpool)
+   not found` — permanently, not the transient race described under Notes
+4. → `ipa-0` and `mariadb-0` sit `Pending` on unbound PVCs
+
+Most pods are `Running` and every node condition is healthy
+(`MemoryPressure: False`), so the cluster looks fine while being permanently
+unable to provision storage. If you see a *persistent* `pool not found`, check
+for a Pending `rook-ceph-operator` before suspecting Ceph.
+
+### kind-multi does not need less memory — it just hides the ceiling
+
+Every kind "node" is a container sharing one kernel, so **each node advertises
+the entire host's memory as allocatable**. On a 14 GiB VM all three nodes report
+~13.6 GiB allocatable *each*, so the scheduler believes it has ~40 GiB and
+happily places 15.9 GiB of requests onto 13 GiB of real RAM. The multi variant
+therefore schedules successfully where single-node refuses — not because it is
+lighter, but because the scheduler cannot see the real limit. It works only
+because requests exceed actual usage.
+
+Size for the real total, not for what `kubectl describe node` reports.
+
+### Disk
+
+~19 GiB of actual usage with `ROOK_OSD_SIZE=60G` (the OSD image is sparse). The
+repo default is 200G; if the host filesystem is smaller than that, override it:
+`ROOK_OSD_SIZE=60G bash bootstrap/kind/setup.sh <variant>`.
 
 ## Setup
 
