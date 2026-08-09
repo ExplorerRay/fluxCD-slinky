@@ -1,31 +1,43 @@
 ---
 # In-cluster FreeIPA identity server (single replica). Hand-rolled because there
 # is no maintained FreeIPA Helm chart. The image runs systemd as PID 1
-# (freeipa-container), so it needs the systemd-in-container accommodations below.
+# (freeipa-container), so it needs cgroup + mount access.
 #
-# DEV ONLY: this runs PRIVILEGED but inside a user namespace (hostUsers:
-# false). Privileged gives systemd + FreeIPA (389-ds, Dogtag CA) the mount and
-# cgroup access they need; the user namespace confines those capabilities so
-# they cannot reach host-global kernel state.
+# DEV ONLY. This uses the USER-NAMESPACE model: hostUsers: false runs the pod in
+# its own user namespace and the container is NON-privileged with NO added
+# capabilities at all. The user namespace is what makes that possible, and it is
+# also what keeps the container away from host-global kernel state — critically,
+# it cannot reload the image's SELinux policy into the shared host kernel.
+# (SELinux policy is a single, kernel-global resource; an UNCONFINED
+# CAP_SYS_ADMIN lets the container's systemd/tools mount selinuxfs and load the
+# image's policy into the HOST kernel, unmapping the host's container-* types and
+# breaking docker/containerd host-wide — observed: docker.sock -> unlabeled_t,
+# every docker command denied. The user namespace is what prevents this.)
 #
-# The user namespace is LOAD-BEARING, not just hardening. SELinux policy is a
-# single, non-namespaced, kernel-global resource. systemd (PID 1) always calls
-# libselinux selinux_init_load_policy(), which UNCONDITIONALLY does
-# `mount("selinuxfs", "/sys/fs/selinux", ...)` and reloads policy — masking
-# that path with a tmpfs does not help, because the mount stacks a fresh live
-# selinuxfs on top and succeeds whenever the process holds CAP_SYS_ADMIN over
-# the host. On a privileged host-user pod this reloads the IMAGE's policy into
-# the HOST kernel, unmapping the host's container-* types and breaking
-# docker/containerd host-wide (observed: docker.sock became unlabeled_t, every
-# docker command denied). selinuxfs is not a userns-mountable filesystem, so
-# under hostUsers: false that mount fails with EPERM, systemd logs "Unable to
-# load SELinux policy. Ignoring." and boots normally — the host is untouched.
-# On non-SELinux hosts (Debian/AppArmor) there is no policy to touch, so this
-# is a clean no-op there too.
+# ⚠️ REQUIRES HOST KERNEL >= 6.3. On older kernels — e.g. RHEL/Rocky/AlmaLinux
+# 9.x, which ship a frozen 5.14 kernel — a hostUsers: false pod FAILS at sandbox
+# creation with `mounting "sysfs" to rootfs at "/sys": operation not permitted`
+# and FreeIPA never starts. It also needs containerd >= 2.1 with
+# cgroup_writable = true, and under kind the /sys masking worked around
+# (kind #3436) — both are implemented in bootstrap/kind/, see docs/bootstrap.md
+# (FreeIPA runtime notes). For older-kernel hosts the alternative is a privileged
+# pod with the host in SELinux permissive.
 #
-# This mirrors how freeipa-container's own rootless-podman CI runs. Needs
-# Kubernetes user-namespace support (GA since v1.33; kindest/node v1.36 has it)
-# and cgroup v2 on the host. See the README security note.
+# Follows freeipa-container's upstream user-namespace deployment
+# (tests/freeipa-k8s.yaml).
+#
+# VERIFIED WORKING on 2026-08-06, single-node kind, with exactly this manifest:
+#   host kernel     6.12.100+deb13-amd64 (Debian 13 trixie, no SELinux)
+#   kind            v0.32.0
+#   node image      kindest/node:v1.36.1 (Kubernetes v1.36.1)
+#   containerd      v2.3.1 on the node, cgroup_writable = true
+#   image           quay.io/freeipa/freeipa-server:rocky-9-4.13.1
+# Evidence: pod ipa-0 reached 1/1 Ready ~8m40s after start;
+#   `kubectl -n freeipa get pod ipa-0 -o jsonpath='{.spec.hostUsers} {.spec.containers[0].securityContext}'`
+#     -> false {"privileged":false}
+#   `cat /proc/self/uid_map` in-container -> `0 1325727744 65536` (real userns)
+#   `ipactl status` -> all 7 services RUNNING (Directory Service, krb5kdc,
+#   kadmin, httpd, ipa-custodia, pki-tomcatd, ipa-otpd).
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -89,10 +101,34 @@ spec:
             - name: IPA_SERVER_IP
               value: no-update
           securityContext:
-            # Privileged for systemd's mount/cgroup needs; confined by the
-            # pod's user namespace (hostUsers: false) so it cannot reach
-            # host-global kernel state.
-            privileged: true
+            # NON-privileged with ZERO added capabilities — the same model as
+            # freeipa-container's upstream user-namespace deployment
+            # (tests/freeipa-k8s.yaml). Inside the user namespace, PID-1 systemd
+            # needs no extra capability: containerd delegates a writable cgroup
+            # subtree (cgroup_writable, see bootstrap/kind/kind-config-single.yaml)
+            # and the emptyDirs below supply the writable /run, /tmp and /dev/shm
+            # systemd would otherwise have to mount itself.
+            #
+            # DO NOT ADD CAP_SYS_ADMIN. Verified: adding it BREAKS the install.
+            # With SYS_ADMIN the server installs fine but the final
+            # ipa-client-install step fails with
+            #   KerberosError: No valid Negotiate header in server response
+            # and httpd's error_log shows
+            #   auth_gssapi:error GSS ERROR gss_acquire_cred[_from]() failed to
+            #   get server creds: ... (SPNEGO cannot find mechanisms to negotiate)
+            # then ipa-server-install rolls the whole thing back. Reproduced
+            # twice with SYS_ADMIN; removing it (changing nothing else) made the
+            # same manifest install cleanly. The capability lets systemd apply
+            # per-service sandboxing (PrivateTmp and friends) that it silently
+            # skips without it, which breaks the /tmp-based ccache handoff
+            # between httpd and gssproxy.
+            #
+            # readOnlyRootFilesystem is also NOT usable here, even though
+            # upstream sets it: upstream runs under podman, which materialises
+            # the image's `VOLUME` declarations, while Kubernetes ignores them.
+            # With a read-only rootfs the image's init dies immediately on
+            #   cp: cannot create regular file '/etc/hosts.dist': Read-only file system
+            privileged: false
           # RHEL IdM sizing docs recommend 4 GB RAM for the smallest deployment
           # tier (up to 10,000 users); install-time (Dogtag CA + 389-ds) is the
           # peak. The limit must also cover the memory-backed emptyDirs below
