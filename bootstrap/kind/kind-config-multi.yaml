@@ -1,5 +1,16 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+# Same containerd accommodation as kind-config-single.yaml — see the long
+# comment there for why the version-2 plugin path is used rather than the
+# version-3 spelling from upstream's reference config (kind silently discards a
+# v3 patch against its v2 base). Non-privileged systemd-in-container
+# (infrastructure/freeipa, hostUsers: false) needs cgroup_writable.
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+      cgroup_writable = true
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+        SystemdCgroup = true
 nodes:
   - role: control-plane
   - role: worker

@@ -91,3 +91,23 @@ done
 for node in $(kind get nodes --name kind); do
   docker exec "$node" mount -o remount,rw /sys
 done
+
+# Workaround for kind issue #3436 (still open): kind bind-mounts
+# /sys/devices/virtual/dmi/id/product_uuid and product_name read-only into each
+# node container. Those mounts leave the node's sysfs instance PARTIALLY
+# COVERED, and the kernel refuses to let runc mount a fresh sysfs inside a user
+# namespace over a partially-covered one — every `hostUsers: false` pod then
+# fails at sandbox creation with
+#   error mounting "sysfs" to rootfs at "/sys": operation not permitted
+# This breaks the non-privileged FreeIPA StatefulSet (infrastructure/freeipa).
+# NOTE: this failure is silent in the kernel log — on 6.12.100 the userspace
+# error above appears with NO corresponding dmesg line (in particular there is
+# no "VFS: Mount too revealing", which older write-ups lead you to expect), so
+# an empty dmesg rules nothing out.
+# The fix from that issue thread: give the node a second, FULLY VISIBLE sysfs
+# instance. runc picks that one as the source for the container's /sys, and the
+# "too revealing" check passes. Idempotent — safe to re-run.
+for node in $(kind get nodes --name kind); do
+  docker exec "$node" sh -c \
+    "mkdir -p /mnt/sysfs; mountpoint -q /mnt/sysfs || mount -t sysfs none /mnt/sysfs"
+done

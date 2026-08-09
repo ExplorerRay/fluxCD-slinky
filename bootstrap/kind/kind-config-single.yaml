@@ -1,5 +1,33 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+# Non-privileged systemd-in-container (infrastructure/freeipa, hostUsers: false)
+# needs containerd >= 2.1 configured with `cgroup_writable = true` so the
+# runtime delegates a WRITABLE cgroup subtree into the container, and
+# `SystemdCgroup = true` so runc uses the systemd cgroup driver. Without these,
+# the container's systemd (PID 1) cannot manage its own cgroups and FreeIPA
+# never boots. Equivalent of the upstream reference config,
+# freeipa/freeipa-container `tests/containerd-2.1-config.toml`.
+#
+# IMPORTANT — plugin path spelling. The upstream reference is written for a
+# standalone containerd 2.x config (`version = 3`, plugin
+# `io.containerd.cri.v1.runtime`). Do NOT copy it verbatim here: kind's node
+# image still ships `/etc/containerd/config.toml` at `version = 2`, and a
+# version-3 patch against that version-2 base is SILENTLY DISCARDED — verified
+# on kind v0.32.0 / kindest/node:v1.36.1, where the v3 patch left no
+# `cgroup_writable` key at all while the v2 spelling below applies cleanly.
+# containerd migrates the v2 config internally, so the setting still takes
+# effect.
+#
+# Requires containerd >= 2.1 on the node (v1.36.1 ships 2.3.1); on older
+# containerd `cgroup_writable` is an unknown key and is ignored. Verify with:
+#   docker exec kind-control-plane containerd --version
+#   docker exec kind-control-plane containerd config dump | grep cgroup_writable
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+      cgroup_writable = true
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+        SystemdCgroup = true
 nodes:
   - role: control-plane
     # Single-node kind: the control-plane is schedulable and hosts the single
