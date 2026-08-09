@@ -14,31 +14,22 @@ sssd:
 # validate the LDAPS server certificate (ldap_tls_reqcert = demand). The
 # freeipa-ca ConfigMap is created out-of-band during bootstrap by extracting
 # /etc/ipa/ca.crt from the FreeIPA pod (see docs/bootstrap.md), and MUST exist
-# before slurm pods start or the mount leaves them Pending.
-loginsetDefaults:
-  podSpec:
-    volumes:
-      - name: freeipa-ca
-        configMap:
-          name: freeipa-ca
-  login:
-    volumeMounts:
-      - name: freeipa-ca
-        mountPath: /etc/ipa/ca.crt
-        subPath: ca.crt
-
-nodesetDefaults:
-  podSpec:
-    volumes:
-      - name: freeipa-ca
-        configMap:
-          name: freeipa-ca
-  slurmd:
-    volumeMounts:
-      - name: freeipa-ca
-        mountPath: /etc/ipa/ca.crt
-        subPath: ca.crt
-
+# before slurm pods start.
+#
+# NOTE: there is no top-level `loginsetDefaults`/`nodesetDefaults` key in the
+# slurm-operator chart (verified against slinky/charts/slurm 1.1.2's own
+# templates: templates/loginset/loginset-cr.yaml and
+# templates/nodeset/nodeset-cr.yaml). Volumes/volumeMounts must be set per
+# named set, under loginsets.<name>.podSpec.volumes /
+# loginsets.<name>.login.volumeMounts and nodesets.<name>.podSpec.volumes /
+# nodesets.<name>.slurmd.volumeMounts. A previous version of this file used
+# `loginsetDefaults`/`nodesetDefaults`, which the chart never reads — Helm
+# silently drops unrecognized keys, so the volume/mount never reached the
+# rendered LoginSet/NodeSet CRs. The pods still started fine (Slurm schedules
+# as root and doesn't need an IPA user), so the failure was invisible in
+# `sinfo`/Kustomization health; SSSD simply stayed offline
+# (`ldap_install_tls failed`, `SSSD is offline` in the sssd sidecar logs) and
+# `getent passwd <ipa-user>` returned nothing.
 loginsets:
   slinky:
     enabled: true
@@ -48,3 +39,34 @@ loginsets:
         type: NodePort
         port: 22
         nodePort: 32222
+    podSpec:
+      volumes:
+        - name: freeipa-ca
+          configMap:
+            name: freeipa-ca
+    login:
+      volumeMounts:
+        - name: freeipa-ca
+          mountPath: /etc/ipa/ca.crt
+          subPath: ca.crt
+
+nodesets:
+  slinky:
+    # ssh.enabled must be true for NodeSet to get an sssdConfRef at all: unlike
+    # loginset-cr.yaml (which sets spec.sssdConfRef unconditionally),
+    # nodeset-cr.yaml only sets spec.ssh.sssdConfRef inside the
+    # `if $nodeset.ssh.enabled` block. Without this, the compute pod's slurmd
+    # container never gets /etc/sssd/sssd.conf at all (regardless of the
+    # freeipa-ca volume mount below), so SSSD never starts there.
+    ssh:
+      enabled: true
+    podSpec:
+      volumes:
+        - name: freeipa-ca
+          configMap:
+            name: freeipa-ca
+    slurmd:
+      volumeMounts:
+        - name: freeipa-ca
+          mountPath: /etc/ipa/ca.crt
+          subPath: ca.crt
