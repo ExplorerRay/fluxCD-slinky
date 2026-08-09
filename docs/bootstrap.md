@@ -170,21 +170,110 @@ order). Only the manual actions Flux cannot perform are listed below. The dev
 credentials are already committed (plaintext) in the per-cluster `secret.yaml`
 files — change them there if desired before deploying.
 
-### Runtime: privileged pod (dev only)
+### Runtime: systemd-in-container needs privileged OR user namespaces
 
-The FreeIPA image runs systemd as PID 1, so it needs cgroup and mount access. To
-keep this simple, the StatefulSet runs as a **privileged pod**. This works on
-any node that already runs `slurmd` — no user namespaces, no
-`UserNamespacesSupport` feature gate, and no special containerd
-cgroup-delegation config. There is **nothing extra to set up** here.
+The FreeIPA image runs systemd as PID 1, so it needs cgroup and mount access.
+There are two ways to grant that, with very different **host kernel**
+requirements — pick based on your host:
 
-The trade-off is reduced isolation (container root ≈ host root), which is why
-this is DEV ONLY (see the [README](../README.md) security note). The more secure
-upstream alternative — `hostUsers: false` (user namespaces) + a read-only root
-filesystem — avoids privileged but requires a recent containerd configured to
-delegate the cgroup hierarchy into the user namespace (see
-freeipa/freeipa-container `tests/containerd-2.1-config.toml`). Switch to that
-model for production.
+**Option A — privileged pod (simplest; DEV ONLY).** Container root ≈ host root.
+It starts on any kernel with no extra setup. The catch is SELinux: on an
+**SELinux-enforcing host** the container's systemd (with `CAP_SYS_ADMIN`) mounts
+selinuxfs and reloads the *image's* SELinux policy into the **shared host
+kernel**, unmapping the host's `container_*` types and breaking
+docker/containerd host-wide. So on enforcing hosts you MUST set the host to
+**SELinux permissive** while FreeIPA runs (`setenforce 0`; the policy swap is
+then harmless), or use Option B. On non-SELinux hosts this is a clean no-op.
+
+**Option B — user namespaces (`hostUsers: false`) + non-privileged (more
+secure).** This is what `infrastructure/freeipa` ships, and it is **verified
+working** on single-node kind: `privileged: false` with **no added capabilities
+at all**. A user namespace confines the container so it cannot touch host-global
+kernel state (including SELinux). It has a hard **kernel-version floor**:
+
+> ⚠️ **Kernel requirement: host kernel ≥ 6.3.** On older kernels a
+> `hostUsers: false` pod fails at *sandbox creation* with
+> `error mounting "sysfs" to rootfs at "/sys": operation not permitted`
+> — the kernel refuses to mount sysfs inside a user namespace. (Do not go
+> looking for a matching `dmesg` line; see the note under accommodation 2.)
+>
+> **RHEL / Rocky / AlmaLinux 9.x ship kernel 5.14 and freeze it for the whole
+> release** (`dnf upgrade` stays on 5.14), so user-namespace pods will **not**
+> start there. To use Option B you need kernel ≥ 6.3 — e.g. ELRepo `kernel-ml`
+> (unsupported/"as-is"; needs Secure Boot off + DKMS rebuilds), or RHEL/Rocky 10
+> (ships 6.12), or any distro on a 6.x kernel.
+>
+> It also needs containerd ≥ 2.1 with `cgroup_writable = true` and
+> `SystemdCgroup = true` (see freeipa/freeipa-container
+> `tests/containerd-2.1-config.toml`) so non-privileged systemd can manage its
+> cgroup subtree.
+
+#### The two kind accommodations (both implemented)
+
+Under kind, Option B needs two extra things. Both are now implemented in
+`bootstrap/kind/` — you do **not** have to do anything by hand — but they are
+described here because the failure modes are opaque if either goes missing.
+
+**1. `cgroup_writable` on the node's containerd** — injected by
+`containerdConfigPatches` in `bootstrap/kind/kind-config-single.yaml`. Note the
+patch deliberately uses the **containerd config version 2** plugin path
+(`plugins."io.containerd.grpc.v1.cri"…`), not the version-3 spelling from
+upstream's reference file: kind's node image ships `config.toml` at `version = 2`,
+and a version-3 patch against it is silently discarded. On
+`kindest/node:v1.36.1` the node already ships containerd 2.3.1 with
+`SystemdCgroup = true`, so `cgroup_writable` is the only key that actually
+changes. Verify:
+
+```sh
+docker exec kind-control-plane containerd --version
+docker exec kind-control-plane containerd config dump | grep cgroup_writable
+```
+
+**2. A fully-visible sysfs on the node** (kind issue
+[#3436](https://github.com/kubernetes-sigs/kind/issues/3436), still open) —
+`bootstrap/kind/setup.sh` mounts one at `/mnt/sysfs` on every node. kind
+bind-mounts `/sys/devices/virtual/dmi/id/product_uuid` and `product_name`
+read-only into each node, which leaves the node's sysfs partially covered; the
+kernel then refuses runc's sysfs mount inside a user namespace. Without it,
+**every** `hostUsers: false` pod — not just FreeIPA — fails at *sandbox
+creation*, never starting a container at all:
+
+```
+Failed to create pod sandbox: ... runc create failed: unable to start container
+process: error during container init: error mounting "sysfs" to rootfs at "/sys":
+mount src=sysfs, dst=/sys, ... flags=MS_RDONLY|MS_NOSUID|MS_NODEV|MS_NOEXEC:
+operation not permitted
+```
+
+Note the fix is to add a *fresh, child-free* sysfs instance at a new path, not to
+uncover `/sys` — unmounting the two product-file covers is not sufficient,
+because `/sys` still has other submounts beneath it. Do not expect
+`VFS: Mount too revealing` in `dmesg`; on kernel 6.12 the userspace error above
+appears with no corresponding kernel log line. Verify:
+
+```sh
+docker exec kind-control-plane mount | grep sysfs   # expect an entry on /mnt/sysfs
+```
+
+#### Do not add capabilities, and do not set readOnlyRootFilesystem
+
+Two tempting hardening tweaks both break this deployment, so the manifest
+deliberately omits them:
+
+- **`capabilities.add: [SYS_ADMIN]`** — the server installs, then the final
+  `ipa-client-install` step fails with `KerberosError: No valid Negotiate header
+  in server response` (httpd logs `gss_acquire_cred[_from]() failed to get server
+  creds … SPNEGO cannot find mechanisms to negotiate`) and the installer rolls
+  everything back. Inside the user namespace systemd needs no extra capability;
+  granting one lets it apply per-service sandboxing that breaks the `/tmp`-based
+  ccache handoff between httpd and gssproxy.
+- **`readOnlyRootFilesystem: true`** — upstream sets this, but upstream runs
+  under podman, which materialises the image's `VOLUME` declarations. Kubernetes
+  ignores them, so the image's init dies at once with `cp: cannot create regular
+  file '/etc/hosts.dist': Read-only file system`. The writable `/run`, `/tmp` and
+  `/dev/shm` emptyDirs in the manifest cover what those volumes would have.
+
+Either way this is DEV ONLY (see the [README](../README.md) security note).
 
 1. **Extract the FreeIPA CA into the slurm namespace.** Once FreeIPA is healthy
    (`kubectl -n freeipa exec sts/ipa -- ipactl status`; the first install takes
