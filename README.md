@@ -13,7 +13,7 @@ shared host kernel and breaks docker/containerd unless the host is set to
 SELinux permissive) or a **user namespace** (`hostUsers: false`, more secure).
 The user-namespace model **requires host kernel ≥ 6.3** — RHEL/Rocky/AlmaLinux
 9.x ship a frozen 5.14 kernel that is too old, and userns pods fail to start on
-it. See the [FreeIPA runtime notes](docs/bootstrap.md#freeipa) for the full
+it. See the [runtime requirements](docs/runtime-requirements.md) for the full
 trade-offs and kernel requirement. The storage layer is likewise dev-grade
 (single-node Ceph on a loopback file, no replication).
 
@@ -47,9 +47,18 @@ a single-node and a multi-node variant:
 
 See:
 
-- [Stack overview](docs/stack-overview.md)
-- [Bootstrap guide](docs/bootstrap.md)
+- [Stack overview](docs/stack-overview.md) — components, Flux dependency
+  order, and the identity architecture (who runs SSSD and why).
+- [Bootstrap guide](docs/bootstrap.md) — the procedure for standing up a
+  cluster and Flux, in order.
 - [Repository layout](docs/repository-layout.md)
+- [Runtime requirements](docs/runtime-requirements.md) — read before
+  deploying on kubeadm/bare metal: container-runtime and host-kernel
+  prerequisites for FreeIPA's systemd-in-container.
+- [Verification](docs/verification.md) — read after deploying: proves the
+  cluster and identity stack actually work, not just that Flux is Ready.
+- [Troubleshooting](docs/troubleshooting.md) — read when something's wrong:
+  a symptom-keyed index of observed failures.
 
 ## Deploy Procedure
 
