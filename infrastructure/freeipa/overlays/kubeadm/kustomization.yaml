@@ -5,3 +5,9 @@ namespace: freeipa
 resources:
   - ../../base
   - secret.yaml
+  - runtimeclass.yaml
+patches:
+  - path: statefulset-patch.yaml
+    target:
+      kind: StatefulSet
+      name: ipa

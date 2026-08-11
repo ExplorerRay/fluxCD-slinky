@@ -1,0 +1,63 @@
+---
+# Containerd configuration for the kubeadm/Kubespray clusters.
+#
+# `runc-cgroupfs` is a SECOND runc runtime handler that delegates a WRITABLE
+# cgroup subtree into the container. Only the non-privileged, user-namespaced
+# FreeIPA StatefulSet uses it, via `runtimeClassName: runc-cgroupfs`
+# (infrastructure/freeipa/overlays/kubeadm). Every other pod keeps the default
+# `runc` handler and therefore a READ-ONLY /sys/fs/cgroup.
+#
+# WHY FREEIPA NEEDS IT
+# FreeIPA runs systemd as PID 1. On cgroup v2 systemd must write
+# cgroup.subtree_control in its own cgroup to start any unit. Without a writable
+# delegated subtree it stalls before basic.target, dbus never starts, and the
+# readiness probe fails forever with "Failed to connect to bus: No such file or
+# directory" — the pod sits 0/1 Running with zero restarts and a near-empty log,
+# which reads like a hang rather than a misconfiguration.
+#
+# `Delegate=yes` is NOT sufficient and is already present: both
+# containerd.service and every cri-containerd-*.scope carry it. That only tells
+# host systemd not to interfere with the subtree; it changes neither the
+# read-only cgroupfs mount inside the container's mount namespace nor the
+# ownership of the delegation files. Verified: a container that is host root AND
+# owns cgroup.subtree_control with mode 0644 still fails with EROFS, because the
+# kernel checks the mount's read-only flag before permissions.
+#
+# WHY A SEPARATE HANDLER RATHER THAN SETTING IT ON `runc`
+# Two reasons, one mechanical and one security:
+#   1. Kubespray (v2.31.0) cannot add the key to the existing runc table. Its
+#      containerd template emits only runtime_type, base_runtime_spec and the
+#      `options` block per runtime, and cgroup_writable is a runtime-level key —
+#      a sibling of runtime_type, not an `options` entry.
+#      `containerd_extra_runtime_args` injects into the CRI plugin section, one
+#      level too high, and redeclaring the runc table here would be duplicate
+#      TOML and break parsing. Declaring a NEW table that Kubespray never emits
+#      is valid (TOML permits defining a super-table after a sub-table).
+#   2. cgroup_writable is per-runtime-handler, not per-pod. Enabling it on the
+#      default handler gives EVERY pod a writable cgroup, which lets an ordinary
+#      container rewrite its own limits — verified: a 64Mi-limited pod raised its
+#      own memory.max to 512Mi. Scoping it to a handler only FreeIPA uses keeps
+#      that away from normal workloads.
+#
+# BLAST RADIUS OF THE HANDLER ITSELF
+# Containers get a PRIVATE cgroup namespace, so even on this handler a pod's own
+# cgroup is the root of its view: it cannot see or write the host hierarchy or
+# any sibling pod's cgroup. And under a user namespace containerd performs
+# correct cgroup v2 delegation — it chowns cgroup.procs and
+# cgroup.subtree_control into the pod's uid map but WITHHOLDS memory.max, so the
+# FreeIPA pod cannot raise even its own limits. Verified on Debian 13 and
+# Rocky 10.
+#
+# Requires containerd >= 2.1; older builds silently ignore cgroup_writable.
+# Check with: containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
+#
+# This is the kubeadm counterpart of the kind accommodation injected via
+# containerdConfigPatches in bootstrap/kind/kind-config-{single,multi}.yaml, and
+# of the upstream reference config freeipa/freeipa-container
+# tests/containerd-2.1-config.toml.
+containerd_extra_args: |
+  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc-cgroupfs]
+    runtime_type = "io.containerd.runc.v2"
+    cgroup_writable = true
+    [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc-cgroupfs.options]
+      SystemdCgroup = true

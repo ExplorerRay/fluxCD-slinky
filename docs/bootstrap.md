@@ -40,6 +40,12 @@ VMs. `clusters/kubeadm-single` and `clusters/kubeadm-multi` are the Flux
 entrypoints for the kubeadm-based cluster variants. Kubespray provisions the
 cluster and installs Calico before Flux starts.
 
+The non-privileged FreeIPA StatefulSet (`infrastructure/freeipa`) additionally
+needs a containerd runtime handler that delegates a writable cgroup subtree.
+Kubespray configures it from `inventory/group_vars/all/containerd.yml` and Flux
+applies the matching RuntimeClass, so no manual step is required — see [the
+kubeadm accommodation](#the-kubeadm-accommodation-implemented).
+
 Kubespray clusters can range from single-node (with control-plane, etcd, and
 worker roles on one machine) to multi-node (with separate control-plane and
 worker nodes). Example inventories are provided at
@@ -254,6 +260,111 @@ appears with no corresponding kernel log line. Verify:
 ```sh
 docker exec kind-control-plane mount | grep sysfs   # expect an entry on /mnt/sysfs
 ```
+
+#### The kubeadm accommodation (implemented)
+
+Under kubeadm/Kubespray, Option B needs the same `cgroup_writable` setting that
+kind gets from `containerdConfigPatches` — but scoped to FreeIPA rather than
+applied to every pod on the node. Two pieces, both in git, both applied by
+Kubespray and Flux with no manual step:
+
+1. **A second containerd runtime handler**, `runc-cgroupfs`, declared via
+   `containerd_extra_args` in
+   `bootstrap/kubespray/inventory/group_vars/all/containerd.yml`. It is the only
+   handler with `cgroup_writable = true`; the default `runc` handler is left
+   alone.
+2. **A RuntimeClass of the same name** plus `runtimeClassName: runc-cgroupfs` on
+   the FreeIPA StatefulSet, in `infrastructure/freeipa/overlays/kubeadm/`. Only
+   FreeIPA references it.
+
+Why scoped and not simply set on the default `runc` handler — two reasons, one
+mechanical and one security:
+
+- **Kubespray cannot add the key to the existing `runc` table.** As of v2.31.0
+  its containerd template emits only `runtime_type`, `base_runtime_spec` and the
+  `options` block per runtime, and `cgroup_writable` is a *runtime-level* key —
+  a sibling of `runtime_type`, not an `options` entry.
+  `containerd_extra_runtime_args` injects into the CRI plugin section, one level
+  too high, and redeclaring the `runc` table would be duplicate TOML and break
+  parsing. Declaring a *new* table Kubespray never emits is valid (TOML allows
+  defining a super-table after a sub-table).
+- **`cgroup_writable` is per-runtime-handler, not per-pod.** Enabling it on the
+  default handler gives **every** pod a writable cgroup, which lets an ordinary
+  container rewrite its own limits — verified: a 64Mi-limited pod raised its own
+  `memory.max` to 512Mi. Scoping it keeps that away from normal workloads.
+
+Unlike kind, a kubeadm node needs **no sysfs workaround** — that one is specific
+to kind's product_uuid bind-mounts. A stock Kubespray node's `/sys` is fully
+visible, so `hostUsers: false` pods reach sandbox creation fine.
+
+`Delegate=yes` is **not** the missing piece and is already present: both
+`containerd.service` and every `cri-containerd-*.scope` carry it. That only tells
+host systemd not to interfere with the subtree; it changes neither the read-only
+cgroupfs mount inside the container's mount namespace nor the ownership of the
+delegation files. Verified: a container that is host root **and** owns
+`cgroup.subtree_control` with mode 0644 still fails with `EROFS`, because the
+kernel checks the mount's read-only flag before permissions.
+
+The failure mode without this is opaque, so it is worth recognising. containerd
+mounts `/sys/fs/cgroup` read-only and never chowns the delegated subtree into the
+pod's uid map, so systemd's write to `cgroup.subtree_control` fails, systemd
+never reaches `basic.target`, dbus never starts, `ipa-server-install` never runs,
+and the readiness probe fails forever with:
+
+```
+Failed to connect to bus: No such file or directory
+```
+
+The pod sits `0/1 Running` with **zero restarts** and an empty or near-empty log,
+which reads like a hang rather than a misconfiguration.
+
+##### What the scoped handler does and does not grant
+
+Measured on Debian 13 and Rocky Linux 10 (containerd 2.2.3, k8s v1.35.4):
+
+| | ordinary pod (default `runc`) | FreeIPA (`runc-cgroupfs` + userns) |
+| --------------------------------- | ----------------------------- | ---------------------------------- |
+| `/sys/fs/cgroup` mount            | `ro`                          | `rw`                               |
+| write `cgroup.subtree_control`    | EROFS                         | **allowed** (what systemd needs)    |
+| raise its own `memory.max`        | EROFS                         | **EPERM — withheld**                |
+| see host or sibling-pod cgroups   | no                            | **no**                             |
+
+The last two rows are the point. Containers get a **private cgroup namespace**,
+so a pod's own cgroup is the root of its view — it cannot name or reach the host
+hierarchy or another pod's cgroup. And under a user namespace containerd
+performs correct cgroup v2 **delegation containment**: it chowns `cgroup.procs`
+and `cgroup.subtree_control` into the pod's uid map but deliberately leaves
+`memory.max` outside it. So the FreeIPA pod can manage cgroups beneath itself and
+cannot raise even its own limits.
+
+Contrast with the privileged model (Option A), which gets a writable cgroupfs for
+free but runs in the **host** cgroup namespace with the host's full `/dev` — it
+can see and write the entire host hierarchy.
+
+Note also that capabilities are not a middle ground here: the rw-vs-ro cgroupfs
+decision is made from the `privileged` boolean at OCI-spec generation time, so
+`privileged: false` with `SYS_ADMIN` (or five more capabilities) still yields a
+read-only cgroupfs — verified. And per the note above, adding `SYS_ADMIN`
+actively breaks the FreeIPA install.
+
+Verify a node after provisioning:
+
+```sh
+containerd --version                                    # need >= 2.1
+sudo containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
+#   expect cgroup_writable = false on runc, = true on runc-cgroupfs
+kubectl get runtimeclass runc-cgroupfs
+kubectl -n freeipa get pod ipa-0 -o jsonpath='{.spec.runtimeClassName}{"\n"}'
+kubectl -n freeipa exec ipa-0 -- mount | grep ' /sys/fs/cgroup '   # expect rw
+```
+
+If the handler is missing from containerd, pods using the RuntimeClass fail to
+start with a clear handler error rather than hanging at `0/1` — a deliberate
+improvement over the silent failure above. Requires containerd >= 2.1; older
+builds silently ignore `cgroup_writable`.
+
+Verified working 2026-08-10 on single-node kubeadm clusters (Kubespray v2.31.0,
+k8s v1.35.4, containerd 2.2.3) on **both** Debian 13 and Rocky Linux 10.
 
 #### Do not add capabilities, and do not set readOnlyRootFilesystem
 
