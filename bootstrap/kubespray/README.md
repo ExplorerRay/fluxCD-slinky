@@ -73,6 +73,27 @@ bash bootstrap/kubespray/run.sh cluster
 
 This provisions the kubeadm cluster and installs Calico CNI.
 
+## User namespaces for FreeIPA (no manual step)
+
+The non-privileged, user-namespaced FreeIPA StatefulSet needs containerd >= 2.1
+with `cgroup_writable = true`. Rather than enabling it on the default `runc`
+handler — which would give **every** pod a writable cgroup and let an ordinary
+container rewrite its own limits — a dedicated `runc-cgroupfs` handler is
+declared in `inventory/group_vars/all/containerd.yml` via
+`containerd_extra_args`, and only FreeIPA selects it through a RuntimeClass
+(`infrastructure/freeipa/overlays/kubeadm/`).
+
+`run.sh cluster` applies it; there is nothing extra to run. Verify:
+
+```bash
+sudo containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
+#   expect cgroup_writable = false on runc, = true on runc-cgroupfs
+```
+
+Skip nothing — the handler is harmless if FreeIPA is not deployed. Details and
+the failure mode are in the
+[bootstrap guide](../../docs/bootstrap.md#the-kubeadm-accommodation-implemented).
+
 ## Deploy Flux
 
 Follow the [deploy procedure](../../README.md#deploy-procedure) in the root README using `clusters/kubeadm-single` or `clusters/kubeadm-multi` as the path, matching the inventory you provisioned:

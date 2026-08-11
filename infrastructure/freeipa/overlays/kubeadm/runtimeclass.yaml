@@ -1,0 +1,17 @@
+---
+# Selects the `runc-cgroupfs` containerd handler, which delegates a WRITABLE
+# cgroup subtree so the non-privileged, user-namespaced FreeIPA pod's systemd
+# (PID 1) can manage its own cgroups. Configured by Kubespray via
+# containerd_extra_args in bootstrap/kubespray/inventory/group_vars/all/containerd.yml.
+#
+# Only infrastructure/freeipa references this. Every other pod stays on the
+# default `runc` handler with a read-only /sys/fs/cgroup.
+#
+# If the handler is missing from containerd, pods using this class fail to start
+# with a clear RuntimeClass/handler error instead of hanging silently at 0/1 —
+# a deliberate improvement over the previous failure mode.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: runc-cgroupfs
+handler: runc-cgroupfs

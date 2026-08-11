@@ -1,0 +1,17 @@
+---
+# kubeadm/Kubespray nodes need FreeIPA pinned to the `runc-cgroupfs` containerd
+# handler: it is the only one configured with `cgroup_writable = true`, which the
+# non-privileged userns pod's systemd needs to write cgroup.subtree_control.
+#
+# Not needed on kind, whose node image sets cgroup_writable on the DEFAULT runc
+# handler via containerdConfigPatches — hence this patch lives in the kubeadm
+# overlay only.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ipa
+  namespace: freeipa
+spec:
+  template:
+    spec:
+      runtimeClassName: runc-cgroupfs
