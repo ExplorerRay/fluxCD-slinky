@@ -92,7 +92,7 @@ sudo containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
 
 Skip nothing — the handler is harmless if FreeIPA is not deployed. Details and
 the failure mode are in the
-[bootstrap guide](../../docs/bootstrap.md#the-kubeadm-accommodation-implemented).
+[runtime requirements](../../docs/runtime-requirements.md#kubeadm).
 
 ## Deploy Flux
 

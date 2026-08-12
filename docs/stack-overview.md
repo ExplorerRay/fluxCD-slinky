@@ -47,12 +47,37 @@ Once all Kustomizations are healthy, the cluster runs:
 - `slurmd` — worker nodes accepting jobs
 - A login node reachable over SSH on NodePort `32222`
 
-Verify with:
+See [verification.md](verification.md) to confirm this end state actually
+works, not just that it applied.
 
-```sh
-kubectl -n slurm get pods
-kubectl -n slurm exec <login-pod> -- sinfo   # should list partitions and worker nodes
-```
+## Identity architecture
+
+Which components run SSSD is a deliberate, asymmetric design decision, not
+an oversight:
+
+- **Only login pods run SSSD.** `loginset-cr.yaml` sets `spec.sssdConfRef`
+  unconditionally, so every login pod resolves identities against FreeIPA.
+- **The controller cannot run SSSD at all.** The Controller CR's schema
+  exposes no `sssdConfRef` field, and `/etc/sssd/sssd.conf` is absent from
+  slurmctld. It does not need it: job submission carries the uid, and
+  scheduling decisions never require resolving a name.
+- **Compute nodes deliberately do not run SSSD either.**
+  `nodesets.<name>.ssh.enabled` is the only gate that gives slurmd an
+  `sssdConfRef` — `nodeset-cr.yaml` sets `spec.ssh.sssdConfRef` only inside
+  its `if $nodeset.ssh.enabled` block, unlike the login side. Interactive
+  jobs are out of scope, so there is no reason to run SSSD on every compute
+  pod.
+
+That omission on compute is only safe because `LaunchParameters=send_gids`
+is set, which makes the *submitting* client (on the login node, where SSSD
+does run) resolve the user's supplementary group list and send it along
+with the job — the controller and compute nodes never need to look it up
+themselves. See [runtime-requirements.md](runtime-requirements.md) for the
+measurements backing this and where it is configured.
+
+The consequence: a job's identity on a compute node is numeric only. `id
+-u` and `id -G` are correct, but `id -un` and `whoami` cannot resolve a
+name, since there is no SSSD there to resolve it.
 
 ## Storage upgrade path (dev -> prod)
 
