@@ -35,10 +35,13 @@ loginsets:
     enabled: true
     replicas: 1
     service:
+      # port/nodePort go directly under `service`; only `type` belongs in
+      # `service.spec`, a free-form pass-through that silently discards them.
+      # Symptom if misplaced: a randomly allocated nodePort.
+      port: 22
+      nodePort: 32222
       spec:
         type: NodePort
-        port: 22
-        nodePort: 32222
     podSpec:
       volumes:
         - name: freeipa-ca

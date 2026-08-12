@@ -2,49 +2,53 @@
 accounting:
   enabled: true
 
-# SSSD authenticates login and compute pods against the in-cluster FreeIPA
-# server over LDAPS. The full sssd.conf is supplied by the slurm-sssd-conf
-# Secret (see secret.yaml — DEV ONLY plaintext) rather than inline.
+# SSSD authenticates the login pods against the in-cluster FreeIPA server over
+# LDAPS. The full sssd.conf comes from the slurm-sssd-conf Secret (secret.yaml,
+# DEV ONLY plaintext) rather than inline.
 sssd:
   secretRef:
     name: slurm-sssd-conf
     key: sssd.conf
 
-# Mount the FreeIPA CA certificate into every login and compute pod so SSSD can
-# validate the LDAPS server certificate (ldap_tls_reqcert = demand). The
-# freeipa-ca ConfigMap is created out-of-band during bootstrap by extracting
-# /etc/ipa/ca.crt from the FreeIPA pod (see docs/bootstrap.md), and MUST exist
-# before slurm pods start or the mount leaves them Pending.
-loginsetDefaults:
-  podSpec:
-    volumes:
-      - name: freeipa-ca
-        configMap:
-          name: freeipa-ca
-  login:
-    volumeMounts:
-      - name: freeipa-ca
-        mountPath: /etc/ipa/ca.crt
-        subPath: ca.crt
-
-nodesetDefaults:
-  podSpec:
-    volumes:
-      - name: freeipa-ca
-        configMap:
-          name: freeipa-ca
-  slurmd:
-    volumeMounts:
-      - name: freeipa-ca
-        mountPath: /etc/ipa/ca.crt
-        subPath: ca.crt
-
+# The freeipa-ca ConfigMap is created out-of-band during bootstrap (extracted
+# from the running FreeIPA pod) and MUST exist before the login pods start.
+#
+# Two placements here are load-bearing and easy to get wrong, because both wrong
+# forms pass validation and are then silently discarded:
+#   - volumes/volumeMounts go under loginsets.<name>, NOT in a top-level
+#     `loginsetDefaults` — the chart has no such key and Helm drops it quietly.
+#   - `port`/`nodePort` go directly under `service`; only `type` belongs in
+#     `service.spec`, which is a free-form ServiceSpec pass-through.
+# See docs/runtime-requirements.md and docs/troubleshooting.md.
 loginsets:
   slinky:
     enabled: true
     replicas: 1
     service:
+      port: 22
+      nodePort: 32222
       spec:
         type: NodePort
-        port: 22
-        nodePort: 32222
+    podSpec:
+      volumes:
+        - name: freeipa-ca
+          configMap:
+            name: freeipa-ca
+    login:
+      volumeMounts:
+        - name: freeipa-ca
+          mountPath: /etc/ipa/ca.crt
+          subPath: ca.crt
+
+# No `nodesets` key: compute nodes deliberately run no SSSD and no CA. Batch jobs
+# do not need it, so long as send_gids is set below; the cost is that a job sees
+# a numeric-only identity (`id -un`/`whoami` cannot resolve). Interactive jobs
+# would need it back — see docs/runtime-requirements.md.
+#
+# send_gids makes the submitting client resolve the user's supplementary groups
+# and send them with the job. Without it they are silently lost on compute.
+# Set via extraConfMap, never extraConf: the chart appends the generated
+# PartitionName line after this, and overriding extraConf directly loses it.
+controller:
+  extraConfMap:
+    LaunchParameters: send_gids
