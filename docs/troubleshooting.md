@@ -38,29 +38,35 @@ use the index to jump straight to yours.
 
 ### `ERROR! the role 'dynamic_groups' was not found`
 
-Fails immediately on `bash bootstrap/kubespray/run.sh cluster`.
+`run.sh` cd's into `$KUBESPRAY_DIR` before invoking `ansible-playbook`, so this
+should not occur when the cluster playbook is run through
+`bash bootstrap/kubespray/run.sh cluster`.
 
-**Cause:** `run.sh` invokes `ansible-playbook` with cwd = the repo root
-(`REPO_ROOT="$(git rev-parse --show-toplevel)"`), so kubespray's own
-`ansible.cfg` — and its relative `roles_path`/`library` settings — never
-load. Ansible then looks for kubespray's roles under this repo instead of
-under `$KUBESPRAY_DIR`.
+**Cause:** `ansible-playbook` ran from somewhere other than `$KUBESPRAY_DIR` —
+most often by invoking it directly, for instance to re-run a failed play by
+hand. Ansible auto-loads an `ansible.cfg` only from the current directory, and
+kubespray's sets `roles_path` and `library` to paths relative to itself. From
+anywhere else that config never loads, and Ansible looks for kubespray's roles
+under this repo instead.
 
 **Check:**
 
 ```sh
-grep -A2 '\[defaults\]' /opt/kubespray/ansible.cfg
-echo "$ANSIBLE_CONFIG"   # empty when this bites
+pwd    # kubespray's playbooks expect this to be $KUBESPRAY_DIR
+grep -E '^(roles_path|library)' /opt/kubespray/ansible.cfg
 ```
 
-**Fix:** export these before running `run.sh`:
+**Fix:** run it from the kubespray checkout, exactly as kubespray's own docs
+do — or just use `run.sh`, which does this for you:
 
 ```sh
-export ANSIBLE_CONFIG=/opt/kubespray/ansible.cfg
-export ANSIBLE_ROLES_PATH=/opt/kubespray/roles
-export ANSIBLE_LIBRARY=/opt/kubespray/library
-bash bootstrap/kubespray/run.sh cluster
+cd /opt/kubespray
+ansible-playbook -i <repo>/bootstrap/kubespray/inventory/single.yml cluster.yml -b
 ```
+
+Exporting `ANSIBLE_CONFIG`, `ANSIBLE_ROLES_PATH` and `ANSIBLE_LIBRARY` at
+`$KUBESPRAY_DIR` works too, but it enumerates the settings that happen to be
+relative today; `cd` covers all of them.
 
 See [bootstrap/kubespray/README.md](../bootstrap/kubespray/README.md).
 
@@ -87,9 +93,10 @@ sudo dnf install -y kernel-modules-extra-$(uname -r)
 sudo modprobe ip_set xt_set
 ```
 
-Do this on every Rocky 10 node **before** running kubespray — see
-[bootstrap/kubespray/README.md](../bootstrap/kubespray/README.md) and
-[bootstrap.md](bootstrap.md).
+Best fixed before it bites: install this on every Rocky 10 node
+**before** running kubespray, not after hitting the error. It is now listed
+as a prerequisite in
+[bootstrap/kubespray/README.md](../bootstrap/kubespray/README.md).
 
 ### coredns CrashLoopBackOff with `[FATAL] plugin/loop: Loop (127.0.0.1:NNNNN -> :53) detected for zone "."`
 
@@ -148,7 +155,7 @@ must use the `runc-cgroupfs` RuntimeClass with a containerd handler that has
 ```sh
 kubectl -n freeipa exec ipa-0 -- mount | grep ' /sys/fs/cgroup '   # expect rw
 kubectl -n freeipa get pod ipa-0 -o jsonpath='{.spec.runtimeClassName}{"\n"}'
-sudo containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
+sudo /usr/local/bin/containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
 kubectl get runtimeclass runc-cgroupfs
 ```
 

@@ -64,10 +64,29 @@ See:
 
 1. Provision a Kubernetes cluster — see the [bootstrap guide](docs/bootstrap.md) for kind or kubeadm setup.
 2. `cd clusters/<cluster_name>/flux-system/`
-3. Create `gotk-components.yaml`
+
+`<cluster_name>` is one of `kind-single`, `kind-multi`, `kubeadm-single`, or
+`kubeadm-multi`. The repository is public, so Flux fetches it anonymously — no
+GitHub PAT or `flux-system` secret is needed.
+
+`gotk-components.yaml` and `gotk-sync.yaml` already ship in each
+`flux-system/` directory, pinned to a tested Flux version and pointing at
+this repository, so the normal path is just to apply them:
+
+3. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready (this also creates the `flux-system` namespace)
+4. `kubectl apply -f gotk-sync.yaml` and wait for the Kustomization to be ready
+
+### Creating a new cluster entrypoint
+
+The steps below are only for a *new* `<cluster_name>` that doesn't already
+have a `flux-system/` directory — not for the four existing ones above, where
+regenerating these files risks overwriting the pinned, working Flux version
+with an untested newer one.
+
+1. Create `gotk-components.yaml`
    - With Flux CLI: `flux install --export > gotk-components.yaml`
    - Without Flux CLI: `curl -sL https://github.com/fluxcd/flux2/releases/latest/download/install.yaml > gotk-components.yaml`
-4. Create `gotk-sync.yaml`
+2. Create `gotk-sync.yaml`
 
 ```yaml
 ---
@@ -98,12 +117,12 @@ spec:
   interval: 10m0s
 ```
 
-`<cluster_name>` is one of `kind-single`, `kind-multi`, `kubeadm-single`, or
-`kubeadm-multi`. The repository is public, so Flux fetches it anonymously — no
-GitHub PAT or `flux-system` secret is needed.
-
-5. `git commit`
-6. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready (this also creates the `flux-system` namespace)
-7. `kubectl apply -f gotk-sync.yaml` and wait for the Kustomization to be ready
+3. `git commit` **and push** the new `flux-system/` directory to the branch
+   the `GitRepository` above tracks. Flux clones that branch from the remote,
+   not your working copy, so an unpushed commit is invisible to it and the
+   Kustomization will fail to find `./clusters/<cluster_name>`. If you cannot
+   push to this repository, fork it and point `spec.url` at your fork.
+4. `kubectl apply -f gotk-components.yaml` and wait for the components to be ready (this also creates the `flux-system` namespace)
+5. `kubectl apply -f gotk-sync.yaml` and wait for the Kustomization to be ready
 
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

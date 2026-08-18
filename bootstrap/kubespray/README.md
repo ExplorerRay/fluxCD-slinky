@@ -4,8 +4,27 @@ Operational runbook for provisioning and managing the Kubernetes cluster. For ra
 
 ## Prerequisites
 
-- [Kubespray](https://github.com/kubernetes-sigs/kubespray) cloned to `$KUBESPRAY_DIR` (default: `/opt/kubespray`)
+- [Kubespray](https://github.com/kubernetes-sigs/kubespray) cloned to
+  `$KUBESPRAY_DIR` (default: `/opt/kubespray`) at a released tag — this repo
+  is verified against `v2.31.0`; other versions may work but are untested:
+
+  ```bash
+  git clone --branch v2.31.0 --depth 1 \
+    https://github.com/kubernetes-sigs/kubespray.git /opt/kubespray
+  ```
 - Ansible installed: `pip install -r $KUBESPRAY_DIR/requirements.txt`
+- On RHEL-family nodes (Rocky/AlmaLinux/RHEL), the cloud image omits the
+  `kernel-modules-extra` RPM, which leaves `ip_set.ko`/`xt_set.ko` missing
+  and kube-proxy/Calico failing partway through the playbook. Before
+  running the cluster playbook:
+
+  ```bash
+  sudo dnf install -y kernel-modules-extra-$(uname -r)
+  sudo modprobe ip_set xt_set
+  ```
+
+  See [troubleshooting](../../docs/troubleshooting.md) for the failure
+  mode if this is skipped.
 - SSH access to all nodes in your chosen inventory file
 
 ## Before Running
@@ -38,6 +57,23 @@ all:
         kube_control_plane:
         kube_node:
 ```
+
+`ansible_host: localhost` is a named host, not Ansible's implicit
+`localhost`, so Ansible reaches it over SSH like any other target. When you
+run the playbook from `node1` itself — the usual single-node case — that
+means the host must be able to SSH to *itself*, and nothing else in this
+inventory implies it. Before running the playbook, make sure you have a
+keypair and that it is authorized for your own account:
+
+```bash
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519
+grep -qxFf ~/.ssh/id_ed25519.pub ~/.ssh/authorized_keys 2>/dev/null \
+  || cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+ssh <user>@<ansible_host> true   # must succeed with no prompt
+```
+
+The same applies to any node you drive from itself, including `node1` in
+`multi.yml` below.
 
 ### Multi-node cluster — `multi.yml`
 
@@ -86,7 +122,7 @@ declared in `inventory/group_vars/all/containerd.yml` via
 `run.sh cluster` applies it; there is nothing extra to run. Verify:
 
 ```bash
-sudo containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
+sudo /usr/local/bin/containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
 #   expect cgroup_writable = false on runc, = true on runc-cgroupfs
 ```
 

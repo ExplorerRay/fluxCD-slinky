@@ -101,18 +101,41 @@ Log in over the login NodePort, **32222**, and run work:
 ```sh
 ssh -p 32222 <user>@<node-ip>
 srun hostname
+
+cd /tmp              # the login shell lands in `/`, unwritable — see below
+cat > job.sh <<'EOF'
+#!/bin/bash
+hostname
+id -G
+EOF
 sbatch job.sh
 sacct --format=JobID,JobName,User,State,ExitCode,NodeList
 ```
 
 Expect the batch job to reach `COMPLETED` with exit code `0:0`.
 
-Two harmless surprises, so they aren't mistaken for bugs:
+The `cd /tmp` is not cosmetic. SSH prints `Could not chdir to home directory
+/home/<user>` and drops you in `/` — there is no shared filesystem between
+login and compute pods, so the account has no home directory. That default
+submission directory is also **unwritable**, which breaks batch jobs twice
+over: you cannot create `job.sh` there in the first place, and even a script
+staged some other way **fails** at run time, because the job inherits the
+submission directory and cannot write its `--output` file into it. `sacct`
+then shows `FAILED`/`CANCELLED` rather than `COMPLETED` (reproduced twice):
 
-- SSH prints `Could not chdir to home directory /home/<user>` and drops you in
-  `/` — there is no shared filesystem between login and compute pods.
-- A batch job's `--output` file is written on the **compute** node's
-  filesystem, not the login pod's, for the same reason.
+```
+9                 job.sh      FAILED     0:53
+9.batch            batch   CANCELLED     0:53
+```
+
+Submitting from a writable directory fixes both halves at once, which is why
+the walkthrough starts with `cd /tmp`. Passing `--chdir=/tmp
+--output=/tmp/slurm-%j.out` fixes only the second half — `sbatch` still reads
+the script itself relative to the *submission* directory, so it does not help
+you get a `job.sh` into an unwritable `/`. `srun` above is unaffected either
+way, because it writes no `--output` file. Note that once the job runs, its
+`--output` file lands on the **compute** node's filesystem, not the login
+pod's — same root cause, no shared filesystem between the two.
 
 **Supplementary-group parity.** This is the check that catches a missing
 `LaunchParameters=send_gids`. Compare group membership on the login node
@@ -128,6 +151,19 @@ They must list the **same** gids. If the job shows only the primary gid,
 licence groups) will fail silently while the job still reports `COMPLETED` —
 see [runtime-requirements.md](runtime-requirements.md) for the `send_gids`
 reference material and where it is configured.
+
+This check only proves anything if the test user has a supplementary group
+to begin with. On a freshly built cluster, FreeIPA's default `ipausers`
+group is non-POSIX and carries no `gidNumber`, so a user with no other
+memberships has none — both sides trivially match and `send_gids` is never
+exercised. Put the user in a POSIX group first:
+
+```sh
+ipa group-add sciteam
+ipa group-add-member sciteam --users=<user>
+```
+
+Only then does a pass mean anything.
 
 **Identity is numeric-only on compute nodes, by design.** Compute nodes
 deliberately run no SSSD. `id -u` and `id -G` are correct there, but `id -un`
@@ -150,7 +186,7 @@ secondary groups, SSH hangs).
 | FreeIPA | `kubectl -n freeipa exec ipa-0 -- ipactl status` | All FreeIPA services running |
 | Identity resolution | `kubectl -n slurm exec <login-pod> -- getent passwd <user>` | User resolves |
 | Login | `ssh -p 32222 <user>@<node-ip>` | Session opens (chdir warning is harmless) |
-| Job execution | `srun hostname`, `sbatch job.sh` + `sacct` | `COMPLETED`, `0:0` |
+| Job execution | `srun hostname`, then `cd /tmp` + `sbatch job.sh` + `sacct` | `COMPLETED`, `0:0` |
 | Group parity | `id -G` vs `srun bash -c 'id -G'` | Same gids on both sides |
 
 None of these substitute for the ones above it — a cluster can pass every row
