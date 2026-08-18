@@ -202,8 +202,11 @@ cannot perform either:
      | kubectl -n slurm create configmap freeipa-ca --from-file=ca.crt=/dev/stdin
    ```
 
-2. **Create users and groups in the web UI.** FreeIPA starts empty, so Slurm
-   cannot resolve anyone yet. The management console is exposed (DEV ONLY) via
+2. **Create users and groups.** FreeIPA starts empty, so Slurm cannot
+   resolve anyone yet. Two ways to do this: the web UI, or a CLI path that
+   works headlessly (no browser, scriptable, works on a bare server).
+
+   **Web UI.** The management console is exposed (DEV ONLY) via
    the `ipa-web` NodePort on **30443**. FreeIPA enforces a referer/host check
    against its FQDN, so browse it by that name rather than the raw node IP — add
    to your client `/etc/hosts`:
@@ -217,5 +220,35 @@ cannot perform either:
    **Identity**. Trust the FreeIPA CA (`ca.crt`) to avoid the TLS warning. On
    kind (where NodePorts aren't host-mapped by default) use `kubectl -n freeipa
    port-forward sts/ipa 30443:443` and browse `https://…:30443/ipa/ui` instead.
+
+   **CLI.** No NodePort or browser needed — exec straight into the IPA pod:
+
+   ```sh
+   kubectl -n freeipa exec sts/ipa -- bash -c '
+     echo "<admin-password>" | kinit admin
+     ipa user-add slurmuser --first=Slurm --last=User --shell=/bin/bash
+     printf "<password>\n<password>\n" | ipa passwd slurmuser
+     ipa user-mod slurmuser --setattr=krbpasswordexpiration=20301231000000Z'
+   ```
+
+   Both passwords are inline above, which puts them in your shell history
+   and in the pod's process arguments, readable by anything that can `ps` in
+   that container. That is acceptable only because these are DEV ONLY
+   credentials; for anything real, drop the literals and let `kinit` and
+   `ipa passwd` prompt interactively (`kubectl exec -it`).
+
+   The last line matters: `ipa passwd` sets the password but leaves it
+   **expired**, which forces a password change at the next login. That
+   interactive prompt blocks non-interactive SSH entirely (e.g. `sbatch`
+   invoked from a script, or any automated test), so push the Kerberos
+   password-expiration attribute out past it as shown.
+
+   Groups work the same way from the CLI (`ipa group-add`,
+   `ipa group-add-member --users=<user>`). SSSD caches aggressively, so a
+   membership change may not be visible in a login pod until the cache is
+   flushed (`sss_cache -E; pkill -HUP sssd` in the login pod) or its TTL
+   expires on its own — and the Rocky login image ships no `sss_cache`
+   binary, see
+   [troubleshooting.md](troubleshooting.md#sss_cache-is-not-found-when-trying-to-flush-the-sssd-cache-rocky-login-image).
 
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

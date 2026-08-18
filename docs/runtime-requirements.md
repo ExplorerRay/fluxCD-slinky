@@ -194,7 +194,7 @@ Verify a node after provisioning:
 
 ```sh
 containerd --version                                    # need >= 2.1
-sudo containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
+sudo /usr/local/bin/containerd config dump | grep -E 'cgroup_writable|SystemdCgroup'
 #   expect cgroup_writable = false on runc, = true on runc-cgroupfs
 kubectl get runtimeclass runc-cgroupfs
 kubectl -n freeipa get pod ipa-0 -o jsonpath='{.spec.runtimeClassName}{"\n"}'
