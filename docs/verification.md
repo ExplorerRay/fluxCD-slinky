@@ -137,26 +137,31 @@ way, because it writes no `--output` file. Note that once the job runs, its
 `--output` file lands on the **compute** node's filesystem, not the login
 pod's — same root cause, no shared filesystem between the two.
 
-**Supplementary-group parity.** This is the check that catches a missing
-`LaunchParameters=send_gids`. Compare group membership on the login node
-against inside a job:
+**Identity resolution inside a job.** This is the check that would catch
+a regression in nss_slurm — the mechanism, wired into the `slurmd`
+image's stock `nsswitch.conf`, that resolves a job's identity on the
+compute node without any SSSD there. Compare the login node against
+inside a job:
 
 ```sh
-id -G                        # on the login node
-srun bash -c 'id -G'         # inside a job
+id -Gn                        # on the login node
+srun id -Gn                   # inside a job
+srun id -un                   # inside a job
+srun whoami                   # inside a job
+srun getent passwd <user>     # inside a job
 ```
 
-They must list the **same** gids. If the job shows only the primary gid,
-`send_gids` is missing and group-based access control (shared directories,
-licence groups) will fail silently while the job still reports `COMPLETED` —
-see [runtime-requirements.md](runtime-requirements.md) for the `send_gids`
-reference material and where it is configured.
+The group names must match on both sides, and `id -un`, `whoami`, and
+`getent passwd` must all resolve fully inside the job — see
+[runtime-requirements.md](runtime-requirements.md) for the nss_slurm
+reference material and `enable_nss_slurm`, the one documented
+`LaunchParameters` switch for it.
 
-This check only proves anything if the test user has a supplementary group
-to begin with. On a freshly built cluster, FreeIPA's default `ipausers`
-group is non-POSIX and carries no `gidNumber`, so a user with no other
-memberships has none — both sides trivially match and `send_gids` is never
-exercised. Put the user in a POSIX group first:
+This check only proves anything if the test user has a supplementary
+group to begin with. On a freshly built cluster, FreeIPA's default
+`ipausers` group is non-POSIX and carries no `gidNumber`, so a user with
+no other memberships has none — both sides trivially match. Put the user
+in a POSIX group first:
 
 ```sh
 ipa group-add sciteam
@@ -165,12 +170,22 @@ ipa group-add-member sciteam --users=<user>
 
 Only then does a pass mean anything.
 
-**Identity is numeric-only on compute nodes, by design.** Compute nodes
-deliberately run no SSSD. `id -u` and `id -G` are correct there, but `id -un`
-and `whoami` cannot resolve a name — this is expected, not a fault. Similarly,
-`sacct`'s `User` column shows a numeric uid rather than a name when run from a
-pod without SSSD (e.g. the controller); run it from the login pod to see the
-resolved name.
+A useful negative check: `getent passwd <user>` run in the `slurmd`
+container *outside* a job step should fail (rc=2). nss_slurm only
+answers for users of steps currently running on that node, and this is
+also how you confirm no SSSD has crept onto compute — if the lookup
+succeeds outside a step, something other than nss_slurm is resolving it.
+
+**Controller/dbd lack of SSSD has a narrow, known cost.** The controller
+and `slurmdbd` still have no working SSSD, by design — job submission,
+in-job identity, and accounting records are unaffected. What breaks,
+from a shell inside the controller pod: `sacct -u <user>` and `squeue -u
+<user>` both fail with an invalid-user error (the numeric uid is not a
+workaround — `sacct` validates the id through NSS before filtering), and
+`sacct`'s `Group` column renders numeric instead of a name. Unfiltered
+`sacct` still shows the right username, because it is stored as a string
+in the accounting DB rather than looked up. Run filtered queries from
+the login pod, where SSSD does run, to see resolved names.
 
 If any of these checks fail, [troubleshooting.md](troubleshooting.md) is
 keyed by symptom (e.g. login pod can't resolve a user, job loses its

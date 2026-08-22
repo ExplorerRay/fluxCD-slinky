@@ -260,9 +260,13 @@ loginsets:
 
 ### Jobs run fine but lose the user's supplementary groups — `id -G` on the login node lists several gids, inside a job only the primary
 
-**Cause:** compute nodes run no SSSD at all (only login pods get it), and
-supplementary groups are not propagated to a job by default — only the
-primary gid survives.
+**Cause:** compute-node identity, including supplementary groups, comes
+from `nss_slurm` — the `slurmd` image's stock `nsswitch.conf` lists
+`slurm` on `passwd` and `group` by default, no configuration required. If
+a job's groups don't match, either that stock file has regressed (a
+base-image change), or `LaunchParameters=enable_nss_slurm` — the one
+documented switch for the feature — was removed from
+`controller.extraConfMap` without `slurmctld` being restarted afterward.
 
 **Check:**
 
@@ -273,9 +277,11 @@ id -G
 srun id -G
 ```
 
-**Fix:** set `LaunchParameters=send_gids` via `controller.extraConfMap` in
-`applications/slurm/overlays/{kind,kubeadm}/values.yaml`. See
-[runtime-requirements.md](runtime-requirements.md) and
+**Fix:** set `LaunchParameters=enable_nss_slurm` via
+`controller.extraConfMap` in
+`applications/slurm/overlays/{kind,kubeadm}/values.yaml`, and confirm the
+compute image's `/etc/nsswitch.conf` still lists `slurm` on `passwd` and
+`group`. See [runtime-requirements.md](runtime-requirements.md) and
 [bootstrap.md](bootstrap.md).
 
 ### `srun` fails with `Unable to allocate resources: No partition specified or system default partition`, and `scontrol show partition` reports `No partitions in the system`
