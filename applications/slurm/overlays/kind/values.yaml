@@ -16,20 +16,23 @@ sssd:
 # /etc/ipa/ca.crt from the FreeIPA pod (see docs/bootstrap.md), and MUST exist
 # before slurm pods start.
 #
-# NOTE: there is no top-level `loginsetDefaults`/`nodesetDefaults` key in the
-# slurm-operator chart (verified against slinky/charts/slurm 1.1.2's own
-# templates: templates/loginset/loginset-cr.yaml and
-# templates/nodeset/nodeset-cr.yaml). Volumes/volumeMounts must be set per
-# named set, under loginsets.<name>.podSpec.volumes /
-# loginsets.<name>.login.volumeMounts and nodesets.<name>.podSpec.volumes /
-# nodesets.<name>.slurmd.volumeMounts. A previous version of this file used
-# `loginsetDefaults`/`nodesetDefaults`, which the chart never reads — Helm
-# silently drops unrecognized keys, so the volume/mount never reached the
-# rendered LoginSet/NodeSet CRs. The pods still started fine (Slurm schedules
-# as root and doesn't need an IPA user), so the failure was invisible in
-# `sinfo`/Kustomization health; SSSD simply stayed offline
-# (`ldap_install_tls failed`, `SSSD is offline` in the sssd sidecar logs) and
-# `getent passwd <ipa-user>` returned nothing.
+# NOTE: chart 1.2.x DOES have top-level `loginsetDefaults`/`nodesetDefaults`
+# keys, which supply the per-set defaults (enabled/replicas/image/...) that
+# 1.1.x hardcoded into a sample `loginsets.slinky`/`nodesets.slinky` entry.
+# They are deep-merged UNDER whatever a named set specifies, so this file
+# keeps setting volumes/volumeMounts per named set, under
+# loginsets.<name>.podSpec.volumes / loginsets.<name>.login.volumeMounts and
+# nodesets.<name>.podSpec.volumes / nodesets.<name>.slurmd.volumeMounts.
+#
+# Historical trap, kept because the failure mode is worth recognising: on
+# chart 1.1.x those *Defaults keys did NOT exist, and an earlier version of
+# this file used them anyway. Helm silently drops unrecognized keys, so the
+# volume/mount never reached the rendered LoginSet/NodeSet CRs. The pods still
+# started fine (Slurm schedules as root and doesn't need an IPA user), so the
+# failure was invisible in `sinfo`/Kustomization health; SSSD simply stayed
+# offline (`ldap_install_tls failed`, `SSSD is offline` in the sssd logs) and
+# `getent passwd <ipa-user>` returned nothing. There is still no
+# values.schema.json in the chart, so a misspelled key fails exactly this way.
 loginsets:
   slinky:
     enabled: true
@@ -73,3 +76,19 @@ nodesets:
         - name: freeipa-ca
           mountPath: /etc/ipa/ca.crt
           subPath: ca.crt
+
+# Chart 1.2.x no longer enables `partitions.all` by default (slurm/UPGRADE.md,
+# "From 1.1.x to 1.2.x"). The partition line used to be generated from the
+# nodesets; it now comes from this separate top-level map. Without it the
+# cluster renders with no PartitionName at all and nothing can be submitted.
+partitions:
+  all:
+    enabled: true
+    nodesets:
+      - ALL
+    configMap:
+      Default: "YES"
+      MaxTime: UNLIMITED
+      # State=UP is Slurm's default, but 1.1.x emitted it explicitly; keep it so
+      # the rendered PartitionName line is byte-identical across the upgrade.
+      State: UP
