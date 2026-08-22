@@ -15,8 +15,11 @@ sssd:
 #
 # Two placements here are load-bearing and easy to get wrong, because both wrong
 # forms pass validation and are then silently discarded:
-#   - volumes/volumeMounts go under loginsets.<name>, NOT in a top-level
-#     `loginsetDefaults` — the chart has no such key and Helm drops it quietly.
+#   - volumes/volumeMounts go under loginsets.<name>. Chart 1.2.x does have a
+#     top-level `loginsetDefaults`, but it holds per-set DEFAULTS that are
+#     merged underneath a named set — it is not where per-cluster mounts go.
+#     (On 1.1.x the key did not exist at all and Helm dropped it quietly; the
+#     chart still ships no values.schema.json, so typos fail silently.)
 #   - `port`/`nodePort` go directly under `service`; only `type` belongs in
 #     `service.spec`, which is a free-form ServiceSpec pass-through.
 # See docs/runtime-requirements.md and docs/troubleshooting.md.
@@ -40,10 +43,10 @@ loginsets:
           mountPath: /etc/ipa/ca.crt
           subPath: ca.crt
 
-# No `nodesets` key: compute nodes deliberately run no SSSD and no CA. Batch jobs
-# do not need it, so long as send_gids is set below; the cost is that a job sees
-# a numeric-only identity (`id -un`/`whoami` cannot resolve). Interactive jobs
-# would need it back — see docs/runtime-requirements.md.
+# Compute nodes deliberately run no SSSD and no CA. Batch jobs do not need it,
+# so long as send_gids is set below; the cost is that a job sees a numeric-only
+# identity (`id -un`/`whoami` cannot resolve). Interactive jobs would need it
+# back — see docs/runtime-requirements.md.
 #
 # send_gids makes the submitting client resolve the user's supplementary groups
 # and send them with the job. Without it they are silently lost on compute.
@@ -52,3 +55,27 @@ loginsets:
 controller:
   extraConfMap:
     LaunchParameters: send_gids
+
+# Chart 1.2.x no longer ships an enabled `nodesets.slinky` or `partitions.all`
+# (slurm/UPGRADE.md, "From 1.1.x to 1.2.x"). Both must now be declared
+# explicitly — omitting them renders NO NodeSet and NO PartitionName line at
+# all, which passes `helm template` and CI happily and leaves a cluster with
+# nothing to schedule on. Declaring the key with an empty body is enough: the
+# per-set defaults now live in the chart's `nodesetDefaults`, which supplies
+# enabled/replicas/image and is deep-merged under whatever is set here.
+nodesets:
+  slinky: {}
+
+# The partition line used to be generated from the nodesets. In 1.2.x it comes
+# from this separate top-level map instead, and defaults to disabled.
+partitions:
+  all:
+    enabled: true
+    nodesets:
+      - ALL
+    configMap:
+      Default: "YES"
+      MaxTime: UNLIMITED
+      # State=UP is Slurm's default, but 1.1.x emitted it explicitly; keep it so
+      # the rendered PartitionName line is byte-identical across the upgrade.
+      State: UP
