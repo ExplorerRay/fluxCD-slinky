@@ -8,8 +8,8 @@ quietly loses a supplementary group. This document collects the reference
 material behind those requirements: the two ways to grant systemd the
 cgroup access it needs, the platform-specific accommodations already
 implemented for kind and kubeadm, the hardening options that look
-reasonable but break the deployment, and the related `send_gids` behaviour
-Slurm's compute nodes depend on because they run no SSSD.
+reasonable but break the deployment, and how Slurm's compute nodes
+resolve identity via `nss_slurm` even though they run no SSSD.
 
 ## systemd in a container needs a writable cgroup
 
@@ -259,59 +259,83 @@ is a disposable single-developer sandbox in Docker, so the blast radius is
 one workstation. If kind ever hosts anything shared, give it the same
 RuntimeClass treatment as kubeadm.
 
-## Compute nodes and `send_gids`
+## Compute nodes and nss_slurm
 
 Only the login pods get SSSD. The controller cannot have it at all (the
 chart exposes no `sssdConfRef` on the Controller CR), and compute nodes
 deliberately do not: `nodesets.<name>.ssh.enabled` is the only gate that
 gives slurmd an `sssdConfRef` (`nodeset-cr.yaml` sets
 `spec.ssh.sssdConfRef` only inside its `if $nodeset.ssh.enabled` block,
-unlike `loginset-cr.yaml` which sets it unconditionally), so with
-interactive jobs out of scope there is no reason to run SSSD on every
+unlike `loginset-cr.yaml` which sets it unconditionally), so unless
+`ssh`-to-compute is wanted there is no reason to run SSSD on every
 compute pod.
 
-That is only safe because `LaunchParameters=send_gids` is set (via
-`controller.extraConfMap`). Supplementary groups are **not** propagated
-by default. Measured on Debian 13 and Rocky Linux 10, with a user in a
-secondary IPA group and no SSSD on the compute node:
+That is safe because the `slurmd` image ships `nss_slurm` wired into its
+stock `nsswitch.conf` — `passwd: files slurm sss systemd` and `group:
+files slurm [SUCCESS=merge] sss [SUCCESS=merge] systemd`. Nothing in
+this repo mounts or edits that file; it is the image default. Measured
+with zero configuration applied, as a user in a secondary IPA group,
+from the login pod:
 
-| | login node `id -G` | inside job `id -G` |
-| ------------------- | ------------------ | ------------------ |
-| without `send_gids` | both gids          | **primary only — group lost** |
-| with `send_gids`    | both gids          | both gids          |
+| probe | result |
+| --- | --- |
+| `srun id -un` / `srun whoami` | resolves to the username |
+| `srun id -Gn` | primary **and** secondary group names |
+| `srun getent passwd <user>` | full entry, including GECOS, home, shell |
 
-Without it, group-based access control inside jobs (group-shared
-directories, licence groups) fails silently while jobs still report
-`COMPLETED`.
+It is genuinely `nss_slurm` doing this, not SSSD leaking onto compute:
+there is no `sssd` process and no `/etc/sssd/sssd.conf` in the `slurmd`
+container. The discriminator is scope — `getent passwd <user>` run
+*outside* a job step on that node returns rc=2, while the same lookup
+*inside* a step resolves. Answering only for users of steps currently
+running on the node is precisely the nss_slurm contract.
+`/etc/nss_slurm.conf` is absent and not needed either: the hostname
+matches `NodeName` and `SlurmdSpoolDir` is the default
+`/var/spool/slurmd`.
 
-Worth knowing if you go digging: it works even though slurmctld itself
-cannot resolve the user — `getent passwd` fails there, and the Controller
-CR exposes no `sssdConfRef` at all. Slurm documents `send_gids` as the
-*controller* resolving the group list and sending it to slurmd, so on this
-stack the lookup must instead be happening in the submitting client on the
-login node. The observed behaviour is certain; that hop is inferred from
-it, not confirmed against Slurm's source.
+Worth knowing if you go digging: this works even though slurmctld itself
+has no working SSSD. `AuthInfo=use_client_ids` is documented to let the
+`auth/slurm` plugin authenticate users without relying on LDAP or the
+operating system, "coupled with nss_slurm", precisely so a cluster can
+operate with real user information only on the login nodes.
 
-Set it through `controller.extraConfMap`, never by patching the rendered
-Controller CR's `extraConf` field: the chart's controller helper seeds
-its config list from `extraConf`/`extraConfMap` and then **appends** the
+That lack of controller SSSD is not free. From a shell inside the
+controller pod: `sacct -u <user>` and `squeue -u <user>` both fail with
+an invalid-user error (the numeric uid is not a workaround — `sacct`
+validates the id through NSS before filtering), and `sacct`'s `Group`
+column renders numeric instead of a name. Unfiltered `sacct` still shows
+the right username, because it is stored as a string in the accounting
+DB rather than looked up. Job submission, in-job identity, and
+accounting records themselves are all unaffected. `AllowGroups=` on a
+partition, `Users=` on a reservation, and `AllowUserBoot` in
+`helpers.conf` would all need real NSS on the controller to work; none
+of them are used today.
+
+`LaunchParameters=send_gids` is not an option in 26.05 — the only
+occurrence of that string in Slurm's documentation is inside the
+*negative* option `disable_send_gids`, which turns off default
+gid/user_name sending and is explicitly ignored once `enable_nss_slurm`
+is set. Set `LaunchParameters=enable_nss_slurm` through
+`controller.extraConfMap` instead: it is the one documented switch for
+this feature, and it also enables the `scontrol getent <node>`
+diagnostic on compute nodes. Never patch the rendered Controller CR's
+`extraConf` field directly: the chart's controller helper seeds its
+config list from `extraConf`/`extraConfMap` and then **appends** the
 generated `PartitionName` line, so patching the rendered field bypasses
 that and leaves the cluster with `No partitions in the system` — every
 job then fails with `No partition specified or system default
 partition`.
 
-The remaining accepted trade-off is that a job's view of its own identity
-is numeric only: `id -u` and `id -G` are correct, but `id -un` and
-`whoami` cannot resolve the name. Both `srun` and `sbatch` reach
-`COMPLETED` and are attributed to the right user in `sacct`. If
-interactive jobs (`srun --pty`) or `pam_slurm_adopt` are ever needed,
-re-enable SSSD on the nodeset — see the commented block in
-`applications/slurm/overlays/kubeadm/values.yaml`.
+Interactive job identity (`srun --pty`) is unaffected by any of this —
+nss_slurm resolves it the same way a batch job does. What SSSD on
+compute would still be needed for is `ssh`-to-compute via
+`pam_slurm_adopt` (the `nodesets.<name>.ssh.enabled` gate above), which
+is a distinct feature from job identity.
 
 ## See also
 
 - [Bootstrap guide](bootstrap.md) — the manual FreeIPA and Slurm identity
   steps this document's requirements support.
 - [Verifying identity end to end](verification.md) — confirm SSSD, LDAPS,
-  and `send_gids` actually work after deploying against these
+  and `nss_slurm` resolution actually work after deploying against these
   requirements.
