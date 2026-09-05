@@ -1,46 +1,32 @@
-# https://github.com/SlinkyProject/slurm-operator/blob/main/helm/slurm/values.yaml
 accounting:
   enabled: true
 
-# SSSD authenticates login and compute pods against the in-cluster FreeIPA
-# server over LDAPS. The full sssd.conf is supplied by the slurm-sssd-conf
-# Secret (see secret.yaml — DEV ONLY plaintext) rather than inline.
 sssd:
   secretRef:
     name: slurm-sssd-conf
     key: sssd.conf
 
-# Mount the FreeIPA CA certificate into every login and compute pod so SSSD can
-# validate the LDAPS server certificate (ldap_tls_reqcert = demand). The
-# freeipa-ca ConfigMap is created out-of-band during bootstrap by extracting
-# /etc/ipa/ca.crt from the FreeIPA pod (see docs/bootstrap.md), and MUST exist
-# before slurm pods start.
+# The switch nss_slurm.html prescribes: it makes slurmctld look up and send
+# passwd/group details in the launch credential, and enables the
+# `scontrol getent <node>` diagnostic.
+# Ref: https://slurm.schedmd.com/nss_slurm.html
 #
-# NOTE: chart 1.2.x DOES have top-level `loginsetDefaults`/`nodesetDefaults`
-# keys, which supply the per-set defaults (enabled/replicas/image/...) that
-# 1.1.x hardcoded into a sample `loginsets.slinky`/`nodesets.slinky` entry.
-# They are deep-merged UNDER whatever a named set specifies, so this file
-# keeps setting volumes/volumeMounts per named set, under
-# loginsets.<name>.podSpec.volumes / loginsets.<name>.login.volumeMounts and
-# nodesets.<name>.podSpec.volumes / nodesets.<name>.slurmd.volumeMounts.
-#
-# Historical trap, kept because the failure mode is worth recognising: on
-# chart 1.1.x those *Defaults keys did NOT exist, and an earlier version of
-# this file used them anyway. Helm silently drops unrecognized keys, so the
-# volume/mount never reached the rendered LoginSet/NodeSet CRs. The pods still
-# started fine (Slurm schedules as root and doesn't need an IPA user), so the
-# failure was invisible in `sinfo`/Kustomization health; SSSD simply stayed
-# offline (`ldap_install_tls failed`, `SSSD is offline` in the sssd logs) and
-# `getent passwd <ipa-user>` returned nothing. There is still no
-# values.schema.json in the chart, so a misspelled key fails exactly this way.
+# It is not, however, what makes identity resolve here. The slurmd image's
+# stock /etc/nsswitch.conf already lists `slurm` on passwd and group, and the
+# operator hardcodes AuthInfo=use_client_ids, which populates the credential
+# from the login client - resolution was measured working with this flag
+# absent. It is set anyway, as the documented and portable mechanism, so that
+# identity does not rest solely on an operator-side constant this repo cannot
+# pin. See docs/runtime-requirements.md.
+controller:
+  extraConfMap:
+    LaunchParameters: enable_nss_slurm
+
 loginsets:
   slinky:
-    enabled: true
-    replicas: 1
+    # `port` has no chart or CRD default - omitting it drops the port from the
+    # LoginSet CR entirely, so it stays even though it looks like a default.
     service:
-      # port/nodePort go directly under `service`; only `type` belongs in
-      # `service.spec`, a free-form pass-through that silently discards them.
-      # Symptom if misplaced: a randomly allocated nodePort.
       port: 22
       nodePort: 32222
       spec:
@@ -56,39 +42,25 @@ loginsets:
           mountPath: /etc/ipa/ca.crt
           subPath: ca.crt
 
+# Chart 1.2.x renders no NodeSet and no PartitionName line unless both keys are
+# declared. An empty body is enough; per-set defaults come from nodesetDefaults.
+#
+# Do NOT add `ssh: {enabled: true}` here without reading this first. It is the
+# gate for ssh-to-compute via pam_slurm_adopt, and it does two things that are
+# probably not wanted:
+#   1. nodeset-cr.yaml injects `sssdConfRef` inside its `if .enabled` block, so
+#      every compute pod receives the FreeIPA bind credential. Job identity has
+#      no need of it - nss_slurm covers that (docs/runtime-requirements.md).
+#   2. On chart 1.2.1 it breaks the install outright. nodesetDefaults carries
+#      `ssh.extraSshdConfig: null`, nodeset-cr.yaml toYaml's the whole ssh dict
+#      into the CR, and the CRD types that field as `string`, so the NodeSet is
+#      rejected with `spec.ssh.extraSshdConfig: Invalid value: "null"` and no
+#      worker pod is ever created. Override extraSshdConfig with a string if
+#      the gate really is needed. (loginset-cr.yaml guards the same field with
+#      `with`, which is why login sets are unaffected.)
 nodesets:
-  slinky:
-    # ssh.enabled must be true for NodeSet to get an sssdConfRef at all: unlike
-    # loginset-cr.yaml (which sets spec.sssdConfRef unconditionally),
-    # nodeset-cr.yaml only sets spec.ssh.sssdConfRef inside the
-    # `if $nodeset.ssh.enabled` block. Without this, the compute pod's slurmd
-    # container never gets /etc/sssd/sssd.conf at all (regardless of the
-    # freeipa-ca volume mount below), so SSSD never starts there.
-    ssh:
-      enabled: true
-    podSpec:
-      volumes:
-        - name: freeipa-ca
-          configMap:
-            name: freeipa-ca
-    slurmd:
-      volumeMounts:
-        - name: freeipa-ca
-          mountPath: /etc/ipa/ca.crt
-          subPath: ca.crt
+  slinky: {}
 
-# Chart 1.2.x no longer enables `partitions.all` by default (slurm/UPGRADE.md,
-# "From 1.1.x to 1.2.x"). The partition line used to be generated from the
-# nodesets; it now comes from this separate top-level map. Without it the
-# cluster renders with no PartitionName at all and nothing can be submitted.
 partitions:
   all:
     enabled: true
-    nodesets:
-      - ALL
-    configMap:
-      Default: "YES"
-      MaxTime: UNLIMITED
-      # State=UP is Slurm's default, but 1.1.x emitted it explicitly; keep it so
-      # the rendered PartitionName line is byte-identical across the upgrade.
-      State: UP
