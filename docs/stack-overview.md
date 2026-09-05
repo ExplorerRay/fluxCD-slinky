@@ -64,20 +64,24 @@ an oversight:
 - **Compute nodes deliberately do not run SSSD either.**
   `nodesets.<name>.ssh.enabled` is the only gate that gives slurmd an
   `sssdConfRef` — `nodeset-cr.yaml` sets `spec.ssh.sssdConfRef` only inside
-  its `if $nodeset.ssh.enabled` block, unlike the login side. Interactive
-  jobs are out of scope, so there is no reason to run SSSD on every compute
-  pod.
+  its `if $nodeset.ssh.enabled` block, unlike the login side. Job identity
+  does not depend on that gate (see below); the only thing it buys is
+  `ssh`-to-compute via `pam_slurm_adopt`, and turning it on also ships the
+  FreeIPA bind credential to every compute pod, so it stays off.
 
-That omission on compute is only safe because `LaunchParameters=send_gids`
-is set, which makes the *submitting* client (on the login node, where SSSD
-does run) resolve the user's supplementary group list and send it along
-with the job — the controller and compute nodes never need to look it up
-themselves. See [runtime-requirements.md](runtime-requirements.md) for the
-measurements backing this and where it is configured.
+That omission on compute is safe because the `slurmd` image's stock
+`nsswitch.conf` already wires in `nss_slurm` — `passwd: files slurm sss
+systemd`, `group: files slurm [SUCCESS=merge] sss [SUCCESS=merge]
+systemd` — so a job resolves its own identity from the launch credential
+without any SSSD on the node. Nothing in this repo mounts or edits that
+file; it is the image default. See
+[runtime-requirements.md](runtime-requirements.md) for the measurements
+backing this.
 
-The consequence: a job's identity on a compute node is numeric only. `id
--u` and `id -G` are correct, but `id -un` and `whoami` cannot resolve a
-name, since there is no SSSD there to resolve it.
+The consequence: inside a job, `id -un`, `whoami`, and `getent passwd
+<user>` all resolve fully. The scoping is tight, though: the same lookup
+run in the `slurmd` container outside a job step fails, since nss_slurm
+only answers for users of steps currently running on that node.
 
 ## Storage upgrade path (dev -> prod)
 
