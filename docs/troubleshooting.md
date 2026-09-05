@@ -260,9 +260,18 @@ loginsets:
 
 ### Jobs run fine but lose the user's supplementary groups — `id -G` on the login node lists several gids, inside a job only the primary
 
-**Cause:** compute nodes run no SSSD at all (only login pods get it), and
-supplementary groups are not propagated to a job by default — only the
-primary gid survives.
+**Cause:** compute-node identity, including supplementary groups, comes
+from `nss_slurm` — the `slurmd` image's stock `nsswitch.conf` lists
+`slurm` on `passwd` and `group`, and the launch credential carries the
+identity because the operator sets `AuthInfo=use_client_ids`. Neither is
+configured in this repo, so the candidates are: the stock `nsswitch.conf`
+regressed (a base-image change); the operator stopped setting
+`AuthInfo=use_client_ids` (an operator upgrade); or
+`LaunchParameters=enable_nss_slurm` was dropped from
+`controller.extraConfMap` *and* that change actually reached the rendered
+`slurm.conf`. Check the first two first — identity was measured resolving
+fully on this stack before `enable_nss_slurm` was ever set, so losing the
+flag on its own is the least likely explanation.
 
 **Check:**
 
@@ -273,8 +282,14 @@ id -G
 srun id -G
 ```
 
-**Fix:** set `LaunchParameters=send_gids` via `controller.extraConfMap` in
-`applications/slurm/overlays/{kind,kubeadm}/values.yaml`. See
+**Fix:** confirm the compute image's `/etc/nsswitch.conf` still lists
+`slurm` on `passwd` and `group`, and that `scontrol show config | grep
+AuthInfo` still reports `use_client_ids`. Keep
+`LaunchParameters=enable_nss_slurm` set via `controller.extraConfMap` in
+`applications/slurm/overlays/{kind,kubeadm}/values.yaml`. If you changed
+those values, check the change actually re-rendered — the `slurm-values`
+ConfigMap is not hash-suffixed, so it may not have (see the second cause
+under `No partitions in the system` below). See
 [runtime-requirements.md](runtime-requirements.md) and
 [bootstrap.md](bootstrap.md).
 
@@ -316,6 +331,26 @@ intent — do not trust that the Kustomization went Ready:
 kubectl get <cr> -o json
 helm template ...   # or check locally before pushing
 ```
+
+**Second cause, same symptom:** the `slurm-values` ConfigMap the HelmRelease
+reads via `valuesFrom` is not hash-suffixed, so editing values updates that
+ConfigMap without changing anything the helm-controller watches. The
+Kustomization reports the new revision and goes Ready, but the release is
+not re-rendered — `slurm-config` keeps the old `slurm.conf` until the next
+HelmRelease reconcile. Confirm by comparing the two:
+
+```sh
+kubectl get cm slurm-values -n slurm -o jsonpath='{.data.values\.yaml}' | grep <your-key>
+kubectl get cm slurm-config -n slurm -o jsonpath='{.data.slurm\.conf}' | grep <your-key>
+```
+
+If they disagree, force it:
+
+```sh
+flux reconcile helmrelease slurm -n slurm
+```
+
+This bites in both directions — applying a change *and* reverting one.
 
 ### A ConfigMap or Secret change is not visible inside a running pod
 
