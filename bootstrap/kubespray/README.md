@@ -26,6 +26,71 @@ Operational runbook for provisioning and managing the Kubernetes cluster. For ra
   See [troubleshooting](../../docs/troubleshooting.md) for the failure
   mode if this is skipped.
 - SSH access to all nodes in your chosen inventory file
+- **At least 20 GiB of RAM** on the `kubeadm-single` node
+  — see [Resource requirements](#resource-requirements).
+
+## Resource requirements
+
+Kubernetes schedules on memory *requests* — not on actual usage and not on
+limits. The sum of the requests of every pod on a node must fit the node's
+*allocatable* memory, which is its RAM minus what the kubelet reserves
+(about 1.3 GiB less on a 20 GiB node: 19562512Ki ≈ 18.66 GiB allocatable).
+On `kubeadm-multi` the same rule applies per node, and DaemonSet pods
+(`csi-cephfsplugin`, `csi-rbdplugin`, …) count on every node.
+
+Pod memory requests for `kubeadm-single`, dominated by Rook-Ceph, total
+**13554 Mi (13.2 GiB)**:
+
+| namespace     | requests   |
+| ------------- | ---------- |
+| `rook-ceph`   | 10850 Mi   |
+| `freeipa`     | 2048 Mi    |
+| `flux-system` | 384 Mi     |
+| `kube-system` | 272 Mi     |
+| **total**     | **13554 Mi** |
+
+These were measured on a 20 GiB node with 1Gi MDS requests (`rook-ceph`
+12386 Mi, total 15090 Mi) and reduced by the 1536 Mi that lowering them to
+256Mi frees; the lowered figures have not been re-measured.
+
+The heavyweights, as configured in
+`infrastructure/rook-ceph/overlays/kubeadm/values.yaml` (Rook adds a 100 Mi
+log-collector sidecar to the osd, mon, mgr and mds pods, included here):
+`rook-ceph-osd-0` at 4196 Mi (request = `osd_memory_target` 4Gi), `ipa-0` at
+2048 Mi, `rook-ceph-mon-a` and `rook-ceph-mgr-a` at 1124 Mi each, the two
+`csi-*-provisioner` pods at 1024 Mi each, and the `csi-*plugin` DaemonSets at
+640 Mi per node. The two CephFS MDS pods request only 356 Mi each. These
+requests are sized for this dev, single-OSD cluster's idle footprint; the
+limits are higher (OSD 8Gi, mon 4Gi, mds 2Gi) and keep the burst headroom.
+
+On a 20 GiB node that leaves **5550 Mi (5.4 GiB)** of allocatable unrequested.
+Slurm, MariaDB, cert-manager and the Slinky operator set **no** requests, so
+the scheduler does not account for them at all — that headroom is all they
+get, and it is why 20 GiB rather than "just above the
+total" is the recommendation. Actual usage is far lower than the requests:
+an idle node sits around 6–8 GiB used (OSD ~1.7 GiB, mgr ~0.7 GiB, mon
+~0.5 GiB, each MDS ~30 MiB). No `kubeadm-multi` measurement exists yet; size
+each node for the requests that land on it.
+
+Check how full a node is:
+
+```bash
+kubectl describe node <node> | grep -A6 'Allocated resources'
+```
+
+### What too little memory looks like
+
+Observed on a 20 GiB `kubeadm-single` node before the requests were lowered,
+when they totaled 20210 Mi against 18.66 GiB allocatable: the standby MDS did
+not fit and, then running at `system-cluster-critical` priority, **preempted**
+`ipa-0` (event `Preempted by pod … on node node1`). `ipa-0` then stayed
+`Pending` (`No preemption victims found`), the `freeipa` Kustomization never
+became Ready, and `slurm` sat blocked on `dependency 'flux-system/freeipa' is
+not ready`. The MDS no longer has that priority class, so today an
+over-full node leaves the *last* pod `Pending` with `Insufficient memory`
+instead — usually `ipa-0` or a Ceph daemon. Nodes report
+`MemoryPressure: False` throughout; it is a scheduling failure, not OOM.
+See [troubleshooting](../../docs/troubleshooting.md#ipa-0-stuck-pending-events-mention-insufficient-memory).
 
 ## Before Running
 

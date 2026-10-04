@@ -54,13 +54,20 @@ FreeIPA is serving identity or that a user can authenticate — see §4 and §5.
 
 `rook-ceph` provides the cluster's default StorageClass, `ceph-block` (Ceph
 RBD, ReadWriteOnce). `slurm-database` and `freeipa` both depend on it for
-their PVCs. Confirm the StorageClass exists and is default, and that PVCs are
-`Bound` rather than stuck `Pending`:
+their PVCs. It also provides `ceph-filesystem` (CephFS, ReadWriteMany,
+reclaim policy `Retain`), which backs a single PVC, `slurm-home` — the `/home`
+shared by the login and compute pods. Confirm both StorageClasses exist and
+`ceph-block` is default, and that PVCs are `Bound` rather than stuck
+`Pending`:
 
 ```sh
 kubectl get storageclass
 kubectl get pvc -A
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph fs status
 ```
+
+`ceph fs status` should show `ceph-filesystem` with one `active` MDS and one
+standby — Rook always runs a standby per active MDS.
 
 The dev-grade cluster is single-node, single-OSD, `replica: 1`, backed by a
 loopback device over a sparse file — see the storage upgrade path in
@@ -100,42 +107,90 @@ Log in over the login NodePort, **32222**, and run work:
 
 ```sh
 ssh -p 32222 <user>@<node-ip>
+pwd                  # /home/<user>
 srun hostname
 
-cd /tmp              # the login shell lands in `/`, unwritable — see below
 cat > job.sh <<'EOF'
 #!/bin/bash
 hostname
-id -G
+pwd
+id -Gn
 EOF
 sbatch job.sh
 sacct --format=JobID,JobName,User,State,ExitCode,NodeList
+cat slurm-<jobid>.out
 ```
 
-Expect the batch job to reach `COMPLETED` with exit code `0:0`.
+The session lands in `/home/<user>`, with no `Could not chdir to home
+directory` warning. `/home` is one CephFS volume (the `slurm-home` PVC)
+mounted in both the login and `slurmd` containers, and the home directory
+itself is created by `pam_mkhomedir` at first login — mode `700`, owned by the
+user's IPA uid and primary gid, populated from `/etc/skel`. So `job.sh` is
+written straight into the home directory, the job runs there on the compute
+node, and its `slurm-<jobid>.out` appears in the same directory on the login
+pod. Expect the batch job to reach `COMPLETED` with exit code `0:0`, and the
+output file to print the compute node's hostname and `/home/<user>`.
 
-The `cd /tmp` is not cosmetic. SSH prints `Could not chdir to home directory
-/home/<user>` and drops you in `/` — there is no shared filesystem between
-login and compute pods, so the account has no home directory. That default
-submission directory is also **unwritable**, which breaks batch jobs twice
-over: you cannot create `job.sh` there in the first place, and even a script
-staged some other way **fails** at run time, because the job inherits the
-submission directory and cannot write its `--output` file into it. `sacct`
-then shows `FAILED`/`CANCELLED` rather than `COMPLETED` (reproduced twice):
+**First login with an SSH key needs the home to exist already.** sshd reads
+`~/.ssh/authorized_keys` *during authentication*, and `pam_mkhomedir` only
+runs in the PAM session stack *after* it — so a user whose home does not yet
+exist cannot log in by key at all; there is no `authorized_keys` for sshd to
+find. Either log in by password the first time, or create the home first from
+the login pod — `su` runs the same `common-session` PAM stack sshd does, so
+this goes through `pam_mkhomedir` exactly as a real login would:
 
+```sh
+kubectl -n slurm exec <login-pod> -c login -- su - <user> -c true
 ```
-9                 job.sh      FAILED     0:53
-9.batch            batch   CANCELLED     0:53
+
+then install the key into `/home/<user>/.ssh/authorized_keys` (mode `600`,
+`.ssh` mode `700`, both owned by the user).
+
+**Shared `/home`.** These checks prove the volume really is shared, private
+per user, and persistent. All were measured on kind-multi and kubeadm-single. From the cluster:
+
+```sh
+kubectl -n slurm get pvc slurm-home            # Bound, RWX, ceph-filesystem
+kubectl get pv $(kubectl -n slurm get pvc slurm-home -o jsonpath='{.spec.volumeName}') \
+  -o jsonpath='{.spec.persistentVolumeReclaimPolicy}{"\n"}'   # Retain
+kubectl -n slurm exec <login-pod> -c login -- sh -c 'mount | grep " /home "; stat -c "%u:%g %a" /home'
+kubectl -n slurm exec <worker-pod> -c slurmd -- sh -c 'mount | grep " /home "; stat -c "%u:%g %a" /home'
 ```
 
-Submitting from a writable directory fixes both halves at once, which is why
-the walkthrough starts with `cd /tmp`. Passing `--chdir=/tmp
---output=/tmp/slurm-%j.out` fixes only the second half — `sbatch` still reads
-the script itself relative to the *submission* directory, so it does not help
-you get a `job.sh` into an unwritable `/`. `srun` above is unaffected either
-way, because it writes no `--output` file. Note that once the job runs, its
-`--output` file lands on the **compute** node's filesystem, not the login
-pod's — same root cause, no shared filesystem between the two.
+Both containers must show the **same** `type ceph` mount (same
+`/volumes/csi/csi-vol-…` path) at `/home`, and `/home` itself must be
+`0:0 755` — root-owned and not world-writable, so no user can create another
+user's home before that user's first login. Then, as the user:
+
+```sh
+stat -c '%u:%g %a' ~                 # <uid>:<gid> 700
+touch ~/from-login
+srun sh -c 'pwd; touch ~/from-compute; ls ~/from-login'
+ls -ln ~/from-compute                # owned by <uid>, visible on login
+mkdir /home/someoneelse              # must fail: Permission denied
+```
+
+and the negative checks from the login pod and the compute pod:
+
+```sh
+kubectl -n slurm exec <login-pod> -c login -- su -s /bin/sh nobody -c 'ls /home/<user>'
+#   ls: cannot open directory '/home/<user>': Permission denied
+kubectl -n slurm exec <worker-pod> -c slurmd -- sh -c 'ls -l /home; getent passwd <user>; echo rc=$?'
+#   numeric owner on /home/<user>, rc=2
+```
+
+The last one is not a failure: outside a job step nss_slurm has no identity
+to serve, so the compute pod shows the home directory's owner as a bare uid —
+the same scoping as the `getent` negative check below. File ownership still
+agrees across pods because login (SSSD) and compute (nss_slurm) resolve the
+same IPA uid.
+
+Finally, persistence: delete the login and worker pods
+(`kubectl -n slurm delete pod <login-pod> <worker-pod>`), wait for them to
+come back, and confirm every file above is still there from both sides.
+Deleting the worker leaves its node `DOWN` (`Reason=slurm-operator: Pod is
+terminating`) and it does not recover by itself; run
+`scontrol update nodename=<node> state=RESUME` before the `srun` side.
 
 **Identity resolution inside a job.** This is the check that would catch
 a regression in nss_slurm — the mechanism, wired into the `slurmd`
@@ -215,8 +270,9 @@ secondary groups, SSH hangs).
 | Storage | `kubectl get pvc -A` | All PVCs `Bound` |
 | FreeIPA | `kubectl -n freeipa exec ipa-0 -- ipactl status` | All FreeIPA services running |
 | Identity resolution | `kubectl -n slurm exec <login-pod> -- getent passwd <user>` | User resolves |
-| Login | `ssh -p 32222 <user>@<node-ip>` | Session opens (chdir warning is harmless) |
-| Job execution | `srun hostname`, then `cd /tmp` + `sbatch job.sh` + `sacct` | `COMPLETED`, `0:0` |
+| Login | `ssh -p 32222 <user>@<node-ip>` | Session opens in `/home/<user>` |
+| Job execution | `srun hostname`, then `sbatch job.sh` from `~` + `sacct` | `COMPLETED`, `0:0`; `slurm-<jobid>.out` in `~` |
+| Shared `/home` | `srun touch ~/x`, then `ls -ln ~/x` on login | Same file, owned by the user's uid |
 | Group parity | `id -G` vs `srun bash -c 'id -G'` | Same gids on both sides |
 
 None of these substitute for the ones above it — a cluster can pass every row

@@ -129,17 +129,27 @@ kubectl -n kube-system delete pod -l k8s-app=kube-dns
 
 ### `ipa-0` stuck `Pending`, events mention insufficient memory
 
-**Cause:** FreeIPA requests roughly 2GiB and a 16GiB node is already about
-91% allocated by everything else in the stack.
+**Cause:** the sum of the stack's memory *requests* exceeds the node's
+allocatable memory (RAM minus the kubelet reserve). The scheduler counts
+requests, not usage, so the node can look mostly idle. `ipa-0` requests 2GiB
+and is often the pod left over; Rook-Ceph accounts for most of the rest. If
+the events say `Preempted by pod …`, a higher-priority pod (before this was
+fixed, the `system-cluster-critical` CephFS standby MDS) evicted it. With
+`ipa-0` down, the `freeipa` Kustomization is not Ready and `slurm` waits on
+`dependency 'flux-system/freeipa' is not ready`.
 
 **Check:**
 
 ```sh
 kubectl -n freeipa describe pod ipa-0 | grep -A5 Events
-kubectl describe node <node> | grep -A5 'Allocated resources'
+kubectl describe node <node> | grep -A6 'Allocated resources'
+kubectl get pods -A --field-selector=status.phase=Pending
 ```
 
-**Fix:** give the node 24GiB.
+**Fix:** add RAM to the node, or lower requests — on kubeadm the Ceph
+daemons' requests are in `infrastructure/rook-ceph/overlays/kubeadm/values.yaml`.
+See the [kubespray sizing section](../bootstrap/kubespray/README.md#resource-requirements)
+(kind: [bootstrap/kind/README.md](../bootstrap/kind/README.md#resource-requirements)).
 
 ### `ipa-0` sits `0/1 Running` with ZERO restarts and an empty or near-empty log; readiness probe reports `Failed to connect to bus: No such file or directory`
 
@@ -359,6 +369,10 @@ lands roughly 1-2 minutes **after** `flux reconcile` returns, not
 immediately.
 
 **Fix:** wait, or delete the pod to force an immediate remount.
+
+**Exception:** a ConfigMap mounted with `subPath` never updates at all —
+waiting does nothing. The login pod's `/etc/pam.d/common-session`
+(`slurm-login-pam`) is mounted that way; restart the pod after changing it.
 
 ### `sss_cache` is not found when trying to flush the SSSD cache (Rocky login image)
 

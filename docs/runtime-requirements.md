@@ -8,8 +8,9 @@ quietly loses a supplementary group. This document collects the reference
 material behind those requirements: the two ways to grant systemd the
 cgroup access it needs, the platform-specific accommodations already
 implemented for kind and kubeadm, the hardening options that look
-reasonable but break the deployment, and how Slurm's compute nodes
-resolve identity via `nss_slurm` even though they run no SSSD.
+reasonable but break the deployment, how Slurm's compute nodes
+resolve identity via `nss_slurm` even though they run no SSSD, and the
+traps around the CephFS `/home` they share with the login nodes.
 
 ## systemd in a container needs a writable cgroup
 
@@ -353,6 +354,81 @@ compute would still be needed for is `ssh`-to-compute via
 `pam_slurm_adopt` (the `nodesets.<name>.ssh.enabled` gate above), which
 is a distinct feature from job identity.
 
+## Shared /home on CephFS
+
+Login and compute pods share one `/home`: a single ReadWriteMany PVC,
+`slurm-home` (`applications/slurm/base/home-pvc.yaml`), on the
+`ceph-filesystem` StorageClass, mounted at `/home` in the `login` and `slurmd`
+containers. Four things about it are easy to break and not obvious from the
+manifests.
+
+**Home directories come from a PAM override.** The login image ships
+`pam_mkhomedir` with its `pam-auth-update` profile disabled. The
+`slurm-login-pam` ConfigMap (`applications/slurm/base/pam/common-session`)
+holds the image's own `common-session` after `pam-auth-update --enable
+mkhomedir`, with `skel=/etc/skel umask=0077` on that line, and is mounted over
+`/etc/pam.d/common-session` with `subPath`. Two consequences:
+
+- A `subPath` mount hides the image's file entirely, so a login image upgrade
+  cannot change it. Re-diff the ConfigMap against the new image's stock file
+  whenever the login image tag changes; the mkhomedir line must be the only
+  difference. Regenerate it from the image rather than by hand, then re-add
+  `skel=/etc/skel umask=0077` to the mkhomedir line (keep pam-auth-update's
+  trailing spaces so the diff stays one line):
+
+  ```sh
+  docker run --rm --entrypoint sh ghcr.io/slinkyproject/login:<tag> -c \
+    'pam-auth-update --enable mkhomedir --package >/dev/null 2>&1;
+     cat /etc/pam.d/common-session'
+  ```
+- A `subPath` mount never picks up ConfigMap edits — not after the usual
+  kubelet sync delay, not ever. Restart the login pod after changing it.
+
+**Never set `fsGroup` on a pod that mounts it.** The CephFS CSI driver runs
+with `CSI_CEPHFS_FSGROUPPOLICY: File`, so a pod `securityContext.fsGroup`
+makes kubelet recursively chown and chmod the *whole* volume to that group on
+every mount — every user's home, flattened to one group. Neither pod sets it
+today; the overlay values carry the warning beside the volume.
+
+**`/home` root ownership.** `pam_mkhomedir` runs as root and creates each
+`/home/<user>` itself, so the volume root must be root-owned and not
+world-writable, or any user could pre-create another user's home. A
+`home-perms` init container on the login pod pins it to `root:root 0755`. On
+kind-multi it was a no-op: ceph-csi (v3.12) already created the subvolume
+root as `0:0 755`. It stays as a defensive guard against a ceph-csi or Ceph
+default changing.
+
+**Deleting home data is never automatic.** The PVC carries
+`kustomize.toolkit.fluxcd.io/prune: disabled`, so removing it from git does
+not make Flux delete it. The `slurm` Namespace carries the same annotation,
+because pruning the namespace — say, by deleting the `slurm` Kustomization —
+would delete every PVC in it regardless of the PVC's own annotation. The
+StorageClass is `reclaimPolicy: Retain`, so a
+deleted claim leaves its PV `Released` and the CephFS subvolume intact. The
+filesystem itself has `preserveFilesystemOnDelete: true`. Note the claim
+cannot actually be deleted while the login or worker pods mount it — the
+`kubernetes.io/pvc-protection` finalizer holds it `Terminating` until they are
+gone.
+
+Recovery after the claim *has* been deleted — measured with a throwaway
+claim on `ceph-filesystem`, which re-bound to its old PV and returned the
+original data:
+
+```sh
+pv=<the Released PV's name>
+kubectl get pv "$pv"                                   # STATUS Released, RECLAIM POLICY Retain
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- \
+  ceph fs subvolume ls ceph-filesystem csi             # subvolume still listed
+kubectl get pv "$pv" -o jsonpath='{.spec.csi.volumeAttributes.subvolumeName}{"\n"}'
+kubectl patch pv "$pv" --type json -p '[{"op":"remove","path":"/spec/claimRef"}]'
+```
+
+then recreate `slurm-home` with `spec.volumeName: <pv>` added (same size,
+access mode and StorageClass), and it binds back to the same data. With
+`Retain`, Kubernetes never removes the subvolume: discarding home data for
+good means deleting the PV *and* running `ceph fs subvolume rm
+ceph-filesystem <subvolume> csi` from the toolbox.
+
 ## See also
 
 - [Bootstrap guide](bootstrap.md) — the manual FreeIPA and Slurm identity
@@ -360,3 +436,5 @@ is a distinct feature from job identity.
 - [Verifying identity end to end](verification.md) — confirm SSSD, LDAPS,
   and `nss_slurm` resolution actually work after deploying against these
   requirements.
+- [Shared `/home` checks](verification.md#5-a-user-can-log-in-and-run-a-job)
+  — confirm the CephFS `/home` is shared, private per user, and persistent.
