@@ -3,8 +3,9 @@
 # (kubeadm-single, kubeadm-multi).
 #
 # Dev-grade, single-node Ceph: one mon, one mgr, one OSD backed by a loopback
-# device over a sparse file (/dev/loop100). BLOCK-ONLY: exposes a single
-# ceph-block RBD StorageClass set as the cluster default. No CephFS, no RGW.
+# device over a sparse file (/dev/loop100). Exposes two StorageClasses:
+# ceph-block (RBD, ReadWriteOnce, the cluster default) and ceph-filesystem
+# (CephFS, ReadWriteMany, backing the shared Slurm /home). No RGW.
 #
 # The OSD node placement (cephClusterSpec.storage.nodes) is NOT set here — it
 # differs per variant and is supplied by a second HelmRelease valuesFrom entry
@@ -14,6 +15,7 @@
 # Storage upgrade path: once >=3 real nodes with real disks exist, replace the
 # /dev/loop100 device entry below with real disk/LV names, bump
 # cephBlockPools[].spec.replicated.size to 3, and change failureDomain to host.
+# Do the same for the CephFS pools and set activeStandby to true.
 
 # Enable the toolbox so `ceph status` can be run from within the cluster.
 toolbox:
@@ -59,20 +61,23 @@ cephClusterSpec:
         memory: "1Gi"
       limits:
         memory: "2Gi"
-    # mon set above the kind overlay's chart-default value (1Gi/2Gi), same
-    # pattern as mgr, since kubeadm nodes are real machines.
+    # Requests are what the scheduler reserves, and the whole stack's requests
+    # must fit in one node's allocatable memory (bootstrap/kubespray/README.md).
+    # They are therefore sized for this dev cluster's idle footprint; the
+    # limits keep the burst headroom. mon idles around 0.5Gi.
     mon:
       requests:
         cpu: "200m"
-        memory: "2Gi"
+        memory: "1Gi"
       limits:
         memory: "4Gi"
-    # osd set above the kind overlay: limit matches Ceph's documented "~8GB per
-    # BlueStore OSD" advisory, since kubeadm nodes are real machines.
+    # osd request equals osd_memory_target (4GiB), the size the OSD's caches
+    # grow to under load; requesting less would make it an eviction candidate.
+    # The limit matches Ceph's documented "~8GB per BlueStore OSD" advisory.
     osd:
       requests:
         cpu: "250m"
-        memory: "6Gi"
+        memory: "4Gi"
       limits:
         memory: "8Gi"
   storage:
@@ -81,7 +86,7 @@ cephClusterSpec:
     # nodes list is supplied per-variant via the overlay's node-values.yaml
     # (overlays/kubeadm-single, overlays/kubeadm-multi).
 
-# BLOCK-ONLY: one replicated pool exposing the default ceph-block StorageClass.
+# One replicated pool exposing the default ceph-block StorageClass.
 cephBlockPools:
   - name: ceph-blockpool
     spec:
@@ -109,6 +114,55 @@ cephBlockPools:
         csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
         csi.storage.k8s.io/fstype: ext4
 
-# Deferred to later work: no CephFS, no object store.
-cephFileSystems: []
+# CephFS for the shared Slurm /home (PVC slurm-home); RBD is ReadWriteOnce.
+# Helm replaces the chart's list entry wholesale, so every field is set here.
+cephFileSystems:
+  - name: ceph-filesystem
+    spec:
+      metadataPool:
+        failureDomain: osd
+        replicated:
+          size: 1
+      dataPools:
+        - name: data0  # rendered as pool ceph-filesystem-data0
+          failureDomain: osd
+          replicated:
+            size: 1
+      # Keep the filesystem and pools if the CR is deleted.
+      preserveFilesystemOnDelete: true
+      metadataServer:
+        activeCount: 1
+        # Rook always adds one standby per active MDS (2 pods); false makes it
+        # a cold standby rather than standby-replay.
+        activeStandby: false
+        # No priorityClassName: the chart default system-cluster-critical lets
+        # the MDS preempt workloads on a full node (observed evicting ipa-0 on a
+        # 20GiB kubeadm-single node). At default priority it waits Pending.
+        # Per MDS pod. Rook sets mds_cache_memory_limit to half the limit, so
+        # the cache is sized by the limit, not the request. The request only
+        # reserves the idle footprint (measured 46Mi active, 30Mi standby).
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            memory: "2Gi"
+    storageClass:
+      enabled: true
+      name: ceph-filesystem
+      isDefault: false
+      pool: data0
+      reclaimPolicy: Retain  # home data must outlive the claim
+      allowVolumeExpansion: true
+      volumeBindingMode: Immediate
+      # Helm replaces this map wholesale; the CSI secrets must be restored.
+      parameters:
+        csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+        csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+        csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+        csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+        csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+        csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+
+# Deferred to later work: no object store.
 cephObjectStores: []

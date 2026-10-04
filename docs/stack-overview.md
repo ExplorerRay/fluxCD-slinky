@@ -9,7 +9,7 @@ stack, managed by FluxCD.
 | Component | Namespace | Role |
 |---|---|---|
 | cert-manager | `cert-manager` | TLS certificate management; required by the Slurm operator |
-| rook-ceph | `rook-ceph` | Rook-managed single-node Ceph providing the `ceph-block` default StorageClass |
+| rook-ceph | `rook-ceph` | Rook-managed single-node Ceph providing the `ceph-block` default StorageClass and the `ceph-filesystem` (CephFS) StorageClass behind the shared Slurm `/home` |
 | freeipa | `freeipa` | In-cluster FreeIPA identity server; Slurm authenticates via SSSD/LDAPS |
 | mariadb-operator | `mariadb` | Kubernetes operator that manages MariaDB instances via CRDs |
 | slurm-database | `slurm` | MariaDB instance storing Slurm accounting data (`slurm_acct_db`) |
@@ -30,12 +30,18 @@ flux-cluster-repositories
 ```
 
 `rook-ceph` reconciles directly off `flux-cluster-repositories` (in parallel
-with `cert-manager`) and provides the default `ceph-block` StorageClass.
+with `cert-manager`) and provides the default `ceph-block` StorageClass plus
+the `ceph-filesystem` (CephFS) StorageClass.
 `slurm-database` depends on both `mariadb-operator` and `rook-ceph` because its
 PVC requires the default StorageClass. `freeipa` depends on `rook-ceph` (its
 `/data` PVC uses `ceph-block`), and `slurm` in turn depends on `freeipa` so the
 FreeIPA server exists before login/compute pods try to authenticate against it
-over LDAPS.
+over LDAPS. `slurm` also depends on `rook-ceph` directly, not just through
+`slurm-database`: its `slurm-home` PVC — the `/home` shared by login and compute
+pods — uses `ceph-filesystem`. Flux's `wait` covers the HelmRelease, not
+CephFS readiness, so on a fresh install the PVC may sit `Pending` until the
+filesystem's MDS is up; the pods wait on it and start on their own once it
+binds.
 
 Flux enforces this order via `dependsOn` on each Kustomization.
 
@@ -85,11 +91,13 @@ only answers for users of steps currently running on that node.
 
 ## Storage upgrade path (dev -> prod)
 
-The `rook-ceph` component is currently **dev-grade and block-only**: a single
-node, one mon/mgr/OSD, `replica: 1`, failure domain `osd`, and the OSD backed by
-a loopback device over a sparse file (`/dev/loop100`). It exposes one default
-StorageClass, `ceph-block` (Ceph RBD, ReadWriteOnce). There is no CephFS
-filesystem and no object store (RGW) yet — those are deferred.
+The `rook-ceph` component is currently **dev-grade**: a single node, one
+mon/mgr/OSD, `replica: 1`, failure domain `osd`, and the OSD backed by a
+loopback device over a sparse file (`/dev/loop100`). It exposes two
+StorageClasses: the default `ceph-block` (Ceph RBD, ReadWriteOnce) and
+`ceph-filesystem` (CephFS, ReadWriteMany, one active MDS plus the cold standby
+Rook always adds, reclaim policy `Retain`), which backs the Slurm `/home`. There is no object store (RGW)
+yet — that is deferred.
 
 To promote it to a production-grade layout:
 
@@ -100,7 +108,14 @@ To promote it to a production-grade layout:
 2. Once at least three real nodes exist, bump
    `cephBlockPools[].spec.replicated.size` to `3` and change `failureDomain`
    from `osd` to `host`.
-3. Drop the loopback bootstrap mechanism (the systemd unit for kubeadm and the
+3. Do the same for the CephFS pools: bump
+   `cephFileSystems[].spec.metadataPool.replicated.size` and each
+   `dataPools[].replicated.size` to `3`, change their `failureDomain` to
+   `host`, and set `metadataServer.activeStandby` to `true`, turning the
+   standby into standby-replay so failover starts from a warm cache. (The cold
+   standby already fails over: losing the active MDS was measured at a 1.8s
+   `/home` write stall on kind.)
+4. Drop the loopback bootstrap mechanism (the systemd unit for kubeadm and the
    `losetup` step for kind).
 
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

@@ -11,7 +11,10 @@ this directory does exactly that.
 ## Prerequisites
 
 - The host kernel must have the `rbd` and `ceph` modules available. Load and
-  persist them:
+  persist them on **every** node, not just the OSD host — `rbd` is the kernel
+  client for `ceph-block` volumes and `ceph` the CephFS client behind the
+  shared Slurm `/home`, and either can be mounted wherever a consuming pod
+  lands:
 
   ```bash
   sudo modprobe rbd ceph
