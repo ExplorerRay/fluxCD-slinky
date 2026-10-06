@@ -3,29 +3,44 @@
 ## Prerequisites
 
 - [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation)
-- **At least 16 GiB of RAM on the host** (both variants) — see below.
+- **At least 20 GiB of RAM on the host** (both variants) — see below.
+- The **`ceph` kernel module** available on the host (`modinfo ceph`). It is the
+  CephFS kernel client behind the shared Slurm `/home`; kind nodes share the
+  host kernel, and `setup.sh` loads it with `sudo modprobe ceph`.
 
 ## Resource requirements
 
-**Give the host at least 16 GiB of RAM.** 8 GiB or 10 GiB does not work, and the
+**Give the host at least 20 GiB of RAM.** 8 GiB or 10 GiB does not work, and the
 way it fails is easy to misread as a bug in the stack.
 
 Measured pod memory *requests* for the full stack (kind-multi,
-`kindest/node:v1.36.1`, `ROOK_OSD_SIZE=60G`) total **15.9 GiB**, dominated by
-Rook-Ceph:
+`kindest/node:v1.36.1`, with the CephFS filesystem behind the shared Slurm
+`/home`) total **16.1 GiB**, dominated by Rook-Ceph:
 
 | namespace     | requests   |
 | ------------- | ---------- |
-| `rook-ceph`   | 13114 Mi   |
+| `rook-ceph`   | 13666 Mi   |
 | `freeipa`     | 2048 Mi    |
 | `kube-system` | 390 Mi     |
 | `flux-system` | 384 Mi     |
-| **total**     | **15936 Mi** |
+| **total**     | **16488 Mi** |
 
 The individual heavyweights are `rook-ceph-osd-0` at 4196 Mi (the chart sets
 `osd_memory_target = 4Gi`), `ipa-0` at 2048 Mi, `rook-ceph-mon-a` at 1124 Mi,
 four `csi-*-provisioner` pods at 1024 Mi each, the `csi-*plugin` DaemonSets at
-640 Mi *per node*, and `rook-ceph-mgr-a` at 612 Mi.
+640 Mi *per node*, and `rook-ceph-mgr-a` at 612 Mi. The two CephFS MDS pods
+(`rook-ceph-mds-ceph-filesystem-a`/`-b`) request 356 Mi each including their
+log-collector sidecar, against a measured idle use of 46 Mi (active) and
+30 Mi (standby).
+
+Before CephFS the same cluster measured 15936 Mi (`rook-ceph` 13114 Mi) and
+16 GiB was the floor. `rook-ceph` grew by 552 Mi: the MDS pair's 712 Mi, less
+160 Mi by which the other Rook pods measured lower than in that earlier run.
+That pushes the total past 16 GiB of RAM before the node reserves anything,
+so 16 GiB no longer fits. 20 GiB is that 16.1 GiB of requests plus headroom for what the node
+itself reserves — the single-node variant has to fit every request into one
+node's allocatable memory. The 20 GiB figure follows from the multi-node
+measurement; it has not itself been tested on a 20 GiB single-node host.
 
 Note these are *requests*, not usage — actual consumption is far lower (a
 healthy single-node cluster sits around 7 GiB). Scheduling is what fails, not
@@ -53,7 +68,8 @@ for a Pending `rook-ceph-operator` before suspecting Ceph.
 Every kind "node" is a container sharing one kernel, so **each node advertises
 the entire host's memory as allocatable**. On a 14 GiB VM all three nodes report
 ~13.6 GiB allocatable *each*, so the scheduler believes it has ~40 GiB and
-happily places 15.9 GiB of requests onto 13 GiB of real RAM. The multi variant
+happily placed the then 15.9 GiB of requests (before CephFS) onto 13 GiB of
+real RAM. The multi variant
 therefore schedules successfully where single-node refuses — not because it is
 lighter, but because the scheduler cannot see the real limit. It works only
 because requests exceed actual usage.

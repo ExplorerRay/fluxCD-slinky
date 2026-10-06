@@ -32,15 +32,41 @@ loginsets:
       spec:
         type: NodePort
     podSpec:
+      # Helm replaces lists wholesale; keep every volume here.
+      # Never set securityContext.fsGroup: with the CephFS CSI FSGroupPolicy
+      # (File), kubelet would recursively chown every user's home.
       volumes:
         - name: freeipa-ca
           configMap:
             name: freeipa-ca
+        - name: home
+          persistentVolumeClaim:
+            claimName: slurm-home
+        - name: pam-common-session  # enables pam_mkhomedir
+          configMap:
+            name: slurm-login-pam
+      # Keep /home root-owned 0755 so no user can pre-create another's home.
+      initContainers:
+        - name: home-perms
+          image: docker.io/library/alpine:3.24.2  # pinned: :latest means imagePullPolicy Always
+          command:
+            - /bin/sh
+            - -c
+            - chown 0:0 /home && chmod 0755 /home
+          volumeMounts:
+            - name: home
+              mountPath: /home
     login:
       volumeMounts:
         - name: freeipa-ca
           mountPath: /etc/ipa/ca.crt
           subPath: ca.crt
+        - name: home
+          mountPath: /home
+        - name: pam-common-session
+          mountPath: /etc/pam.d/common-session
+          subPath: common-session
+          readOnly: true
 
 # Chart 1.2.x renders no NodeSet and no PartitionName line unless both keys are
 # declared. An empty body is enough; per-set defaults come from nodesetDefaults.
@@ -59,7 +85,17 @@ loginsets:
 #      the gate really is needed. (loginset-cr.yaml guards the same field with
 #      `with`, which is why login sets are unaffected.)
 nodesets:
-  slinky: {}
+  slinky:
+    # Same shared /home as the login pod (same fsGroup caveat).
+    podSpec:
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: slurm-home
+    slurmd:
+      volumeMounts:
+        - name: home
+          mountPath: /home
 
 partitions:
   all:

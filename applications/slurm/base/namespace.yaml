@@ -3,3 +3,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: slurm
+  annotations:
+    # Pruning the namespace would delete the slurm-home PVC with it, despite
+    # the PVC's own prune annotation. Deletion must be manual.
+    kustomize.toolkit.fluxcd.io/prune: disabled

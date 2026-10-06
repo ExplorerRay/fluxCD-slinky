@@ -74,6 +74,10 @@ if ! sudo losetup "$ROOK_OSD_LOOP" >/dev/null 2>&1; then
   sudo losetup "$ROOK_OSD_LOOP" "$ROOK_OSD_IMG"
 fi
 
+# CephFS kernel client for the shared Slurm /home; kind nodes share the host
+# kernel.
+sudo modprobe ceph
+
 kind create cluster --name kind --config "$REPO_ROOT/bootstrap/kind/kind-config-${VARIANT}.yaml"
 
 # Disable auto-restart on the node containers. kind defaults to restarting

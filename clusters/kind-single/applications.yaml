@@ -53,3 +53,4 @@ spec:
     - name: slurm-operator
     - name: slurm-database
     - name: freeipa
+    - name: rook-ceph

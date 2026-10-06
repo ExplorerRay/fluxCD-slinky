@@ -1,0 +1,18 @@
+---
+# Shared /home for the login and compute pods (see the overlay values.yaml).
+# One RWX claim for all users; ceph-csi enforces the size as a quota.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slurm-home
+  namespace: slurm
+  annotations:
+    # Never let Flux prune user homes; deletion must be manual.
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ceph-filesystem
+  resources:
+    requests:
+      storage: 20Gi
