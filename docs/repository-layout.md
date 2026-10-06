@@ -11,8 +11,8 @@ clusters/
   kubeadm-multi/
 ```
 
-Shared component resources live in `base` directories. Cluster-specific
-resources and values live in overlays:
+Shared component resources and Helm values live in `base` directories.
+Overlays hold only what really differs per platform:
 
 ```text
 applications/slurm/
@@ -31,15 +31,16 @@ path: ./applications/slurm/overlays/kind
 
 Use this rule:
 
-- Put identical resources in `base`.
-- Put cluster-specific values or extra resources in `overlays/kind` or
-  `overlays/kubeadm`.
+- Put identical resources and values in `base`, including a component's
+  Helm `values.yaml`.
+- Put only real platform differences in `overlays/kind` or
+  `overlays/kubeadm`. An overlay with none just includes `../../base`.
 
-This keeps common behavior shared while allowing one cluster to add resources
-that the other cluster does not need. `overlays/kind` and `overlays/kubeadm`
-are shared by *both* variants (single and multi) of that platform — the
-single-node and multi-node entrypoints for a platform point at the same
-overlay for every component except one.
+This keeps common behavior in one place while allowing one cluster to add
+resources that the other cluster does not need. `overlays/kind` and
+`overlays/kubeadm` are shared by *both* variants (single and multi) of that
+platform — the single-node and multi-node entrypoints for a platform point at
+the same overlay for every component except one.
 
 The exception is `rook-ceph`. Its OSD node placement
 (`cephClusterSpec.storage.nodes`) differs per variant, so each variant gets
@@ -47,10 +48,10 @@ its own overlay layered on top of the shared one:
 
 ```text
 infrastructure/rook-ceph/
-  base/
+  base/                 # values.yaml shared by every variant
   overlays/
-    kind/               # shared values (mon/mgr/OSD sizing, block pool, ...)
-    kubeadm/            # shared values
+    kind/               # platform-values.yaml (mgr/mon/OSD sizing), mapOptions
+    kubeadm/            # platform-values.yaml (mgr/mon/OSD sizing)
     kind-single/        # resources: [../kind]    + node-values.yaml
     kind-multi/         # resources: [../kind]    + node-values.yaml
     kubeadm-single/     # resources: [../kubeadm] + node-values.yaml
@@ -58,12 +59,13 @@ infrastructure/rook-ceph/
 ```
 
 Each variant overlay's `node-values.yaml` supplies just the OSD node name
-(`kind-control-plane`, `kind-worker`, `node1`, or `node2`) via a second
-`valuesFrom` entry patched onto the `rook-ceph-cluster` HelmRelease, so the
-per-variant hostname is layered on top of the values shared by both variants
-of that platform. The cluster entrypoints in `clusters/` point the `rook-ceph`
-Kustomization at the matching variant overlay, while every other component's
-Kustomization still points at the shared `overlays/kind` or `overlays/kubeadm`.
+(`kind-control-plane`, `kind-worker`, `node1`, or `node2`).
+`base/helmrelease-cluster.yaml` merges the three in order — `values.yaml`,
+then `platform-values.yaml`, then `node-values.yaml` — so the per-variant
+hostname is layered on top of the platform and shared values. The cluster
+entrypoints in `clusters/` point the `rook-ceph` Kustomization at the matching
+variant overlay, while every other component's Kustomization still points at
+the shared `overlays/kind` or `overlays/kubeadm`.
 
 ## Bootstrap Directory
 

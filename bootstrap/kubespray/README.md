@@ -54,7 +54,8 @@ These were measured on a 20 GiB node with 1Gi MDS requests (`rook-ceph`
 256Mi frees; the lowered figures have not been re-measured.
 
 The heavyweights, as configured in
-`infrastructure/rook-ceph/overlays/kubeadm/values.yaml` (Rook adds a 100 Mi
+`infrastructure/rook-ceph/overlays/kubeadm/platform-values.yaml` and, for the
+MDS, `infrastructure/rook-ceph/base/values.yaml` (Rook adds a 100 Mi
 log-collector sidecar to the osd, mon, mgr and mds pods, included here):
 `rook-ceph-osd-0` at 4196 Mi (request = `osd_memory_target` 4Gi), `ipa-0` at
 2048 Mi, `rook-ceph-mon-a` and `rook-ceph-mgr-a` at 1124 Mi each, the two

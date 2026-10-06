@@ -1,5 +1,5 @@
 ---
-# Shared /home for the login and compute pods (see the overlay values.yaml).
+# Shared /home for the login and compute pods (see values.yaml).
 # One RWX claim for all users; ceph-csi enforces the size as a quota.
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -388,7 +388,8 @@ mkhomedir`, with `skel=/etc/skel umask=0077` on that line, and is mounted over
 with `CSI_CEPHFS_FSGROUPPOLICY: File`, so a pod `securityContext.fsGroup`
 makes kubelet recursively chown and chmod the *whole* volume to that group on
 every mount — every user's home, flattened to one group. Neither pod sets it
-today; the overlay values carry the warning beside the volume.
+today; `applications/slurm/base/values.yaml` carries the warning beside the
+volume.
 
 **`/home` root ownership.** `pam_mkhomedir` runs as root and creates each
 `/home/<user>` itself, so the volume root must be root-owned and not

@@ -146,8 +146,10 @@ kubectl describe node <node> | grep -A6 'Allocated resources'
 kubectl get pods -A --field-selector=status.phase=Pending
 ```
 
-**Fix:** add RAM to the node, or lower requests — on kubeadm the Ceph
-daemons' requests are in `infrastructure/rook-ceph/overlays/kubeadm/values.yaml`.
+**Fix:** add RAM to the node, or lower requests — on kubeadm the Ceph mgr,
+mon and OSD requests are in
+`infrastructure/rook-ceph/overlays/kubeadm/platform-values.yaml`, the MDS
+requests in `infrastructure/rook-ceph/base/values.yaml`.
 See the [kubespray sizing section](../bootstrap/kubespray/README.md#resource-requirements)
 (kind: [bootstrap/kind/README.md](../bootstrap/kind/README.md#resource-requirements)).
 
@@ -231,10 +233,9 @@ kubectl -n freeipa exec sts/ipa -- cat /etc/ipa/ca.crt \
 ```
 
 and set volumes/mounts under `loginsets.<name>.podSpec.volumes` and
-`loginsets.<name>.login.volumeMounts` in
-`applications/slurm/overlays/{kind,kubeadm}/values.yaml` — **not** under a
-top-level `loginsetDefaults`, which does not exist in the chart's templates
-and is silently ignored.
+`loginsets.<name>.login.volumeMounts` in `applications/slurm/base/values.yaml`
+— **not** under a top-level `loginsetDefaults`, which does not exist in the
+chart's templates and is silently ignored.
 
 ### The login Service is on a random NodePort instead of the configured one (e.g. 31357 rather than 32222)
 
@@ -254,9 +255,8 @@ kubectl -n slurm get loginset <name> -o jsonpath='{.spec.service}{"\n"}'
 kubectl -n slurm get svc <login-svc> -o jsonpath='{.spec.ports[0].nodePort}{"\n"}'
 ```
 
-**Fix:** in
-`applications/slurm/overlays/{kind,kubeadm}/values.yaml`, put `port`/
-`nodePort` directly under `service`, and keep `type` under `service.spec`:
+**Fix:** in `applications/slurm/base/values.yaml`, put `port`/`nodePort`
+directly under `service`, and keep `type` under `service.spec`:
 
 ```yaml
 loginsets:
@@ -296,10 +296,10 @@ srun id -G
 `slurm` on `passwd` and `group`, and that `scontrol show config | grep
 AuthInfo` still reports `use_client_ids`. Keep
 `LaunchParameters=enable_nss_slurm` set via `controller.extraConfMap` in
-`applications/slurm/overlays/{kind,kubeadm}/values.yaml`. If you changed
-those values, check the change actually re-rendered — the `slurm-values`
-ConfigMap is not hash-suffixed, so it may not have (see the second cause
-under `No partitions in the system` below). See
+`applications/slurm/base/values.yaml`. If you changed those values, check
+the change actually re-rendered — the `slurm-values` ConfigMap is not
+hash-suffixed, so it may not have (see the second cause under
+`No partitions in the system` below). See
 [runtime-requirements.md](runtime-requirements.md) and
 [bootstrap.md](bootstrap.md).
 

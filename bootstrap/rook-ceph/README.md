@@ -48,7 +48,7 @@ The script honors these environment variables (defaults shown):
 ## Notes
 
 - The OSD node hostname is set per cluster variant, not in the shared
-  `overlays/kubeadm/values.yaml`: it lives in
+  `base/values.yaml` or `overlays/kubeadm/platform-values.yaml`: it lives in
   `infrastructure/rook-ceph/overlays/kubeadm-single/node-values.yaml`
   (`node1`) and `overlays/kubeadm-multi/node-values.yaml` (`node2`). These
   already match the provided Kubespray inventories, so no edit is normally

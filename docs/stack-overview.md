@@ -101,13 +101,13 @@ yet — that is deferred.
 
 To promote it to a production-grade layout:
 
-1. In the overlay `values.yaml`
-   (`infrastructure/rook-ceph/overlays/<cluster>/values.yaml`), replace the
-   `/dev/loop100` entry in `cephClusterSpec.storage.nodes[].devices` with a real
-   disk or LV name, and add the additional real nodes/devices.
+1. In the variant's `node-values.yaml`
+   (`infrastructure/rook-ceph/overlays/<variant>/node-values.yaml`), replace
+   the `/dev/loop100` entry in `cephClusterSpec.storage.nodes[].devices` with
+   a real disk or LV name, and add the additional real nodes/devices.
 2. Once at least three real nodes exist, bump
    `cephBlockPools[].spec.replicated.size` to `3` and change `failureDomain`
-   from `osd` to `host`.
+   from `osd` to `host`, in `infrastructure/rook-ceph/base/values.yaml`.
 3. Do the same for the CephFS pools: bump
    `cephFileSystems[].spec.metadataPool.replicated.size` and each
    `dataPools[].replicated.size` to `3`, change their `failureDomain` to
