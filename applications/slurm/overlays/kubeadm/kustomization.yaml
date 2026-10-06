@@ -4,9 +4,3 @@ namespace: slurm
 resources:
   - ../../base
   - secret.yaml
-generatorOptions:
-  disableNameSuffixHash: true
-configMapGenerator:
-  - name: slurm-values
-    files:
-      - values.yaml
