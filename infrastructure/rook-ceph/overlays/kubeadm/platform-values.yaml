@@ -1,0 +1,33 @@
+---
+# kubeadm's rook-ceph-cluster values, merged over base/values.yaml.
+cephClusterSpec:
+  # Modest resource requests/limits for the single constrained node.
+  # mgr sits above the rook-ceph-cluster chart defaults (and above the kind
+  # overlay) since kubeadm nodes are real machines — the chart-default 1Gi
+  # limit is the floor below which the mgr gets OOM-killed at startup.
+  resources:
+    mgr:
+      requests:
+        cpu: "100m"
+        memory: "1Gi"
+      limits:
+        memory: "2Gi"
+    # Requests are what the scheduler reserves, and the whole stack's requests
+    # must fit in one node's allocatable memory (bootstrap/kubespray/README.md).
+    # They are therefore sized for this dev cluster's idle footprint; the
+    # limits keep the burst headroom. mon idles around 0.5Gi.
+    mon:
+      requests:
+        cpu: "200m"
+        memory: "1Gi"
+      limits:
+        memory: "4Gi"
+    # osd request equals osd_memory_target (4GiB), the size the OSD's caches
+    # grow to under load; requesting less would make it an eviction candidate.
+    # The limit matches Ceph's documented "~8GB per BlueStore OSD" advisory.
+    osd:
+      requests:
+        cpu: "250m"
+        memory: "4Gi"
+      limits:
+        memory: "8Gi"

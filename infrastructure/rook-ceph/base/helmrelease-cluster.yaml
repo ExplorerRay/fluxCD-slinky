@@ -17,7 +17,16 @@ spec:
         kind: HelmRepository
         name: rook-ceph
         namespace: flux-system
+  # Merged in order, later entries winning (maps merge, lists are replaced).
+  # base/values.yaml is shared; the platform overlay (kind, kubeadm) supplies
+  # the platform values, and the variant overlay (-single, -multi) the nodes.
   valuesFrom:
     - kind: ConfigMap
       name: rook-ceph-cluster-values
       valuesKey: values.yaml
+    - kind: ConfigMap
+      name: rook-ceph-cluster-platform-values
+      valuesKey: platform-values.yaml
+    - kind: ConfigMap
+      name: rook-ceph-cluster-node-values
+      valuesKey: node-values.yaml
