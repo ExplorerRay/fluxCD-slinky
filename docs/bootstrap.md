@@ -152,11 +152,11 @@ hostname, so no manual edit is normally required:
 | `kubeadm-multi`    | `node2`               |
 
 These come from `infrastructure/rook-ceph/overlays/<variant>/node-values.yaml`,
-which is layered on top of the shared `overlays/kind` or `overlays/kubeadm`
-values via a second HelmRelease `valuesFrom` entry. Only custom setups —
-a kubespray inventory that uses different hostnames than `node1`/`node2`, or a
-kind cluster created under a different `--name` — need to edit the relevant
-`node-values.yaml` to match the real node hostname:
+the last HelmRelease `valuesFrom` entry, layered on top of the shared
+`base/values.yaml` and the platform's `platform-values.yaml`. Only custom
+setups — a kubespray inventory that uses different hostnames than
+`node1`/`node2`, or a kind cluster created under a different `--name` — need
+to edit the relevant `node-values.yaml` to match the real node hostname:
 
 ```sh
 kubectl get nodes -o name

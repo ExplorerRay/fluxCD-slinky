@@ -7,6 +7,34 @@ resources:
 generatorOptions:
   disableNameSuffixHash: true
 configMapGenerator:
-  - name: rook-ceph-cluster-values
+  - name: rook-ceph-cluster-platform-values
     files:
-      - values.yaml
+      - platform-values.yaml
+    # Fail krbd I/O with EIO after 60s instead of retrying forever. On kind,
+    # deleting the cluster orphans any still-mapped RBD devices in the shared
+    # host kernel; without a timeout, reads on them hang in D-state (which
+    # wedges device scans and force-unmap) and only a host reboot recovers.
+    # See the teardown order in bootstrap/kind/README.md — this is the safety
+    # net for when that ordering is missed. kind only: on a long-lived host it
+    # would turn a slow OSD restart into I/O errors.
+    literals:
+      - rbd-map-options=osd_request_timeout=60
+# mapOptions sits inside the cephBlockPools list, which Helm would replace
+# whole from a values file, so targetPath sets just this one field. It must be
+# under storageClass.parameters: the CSI driver reads it from the
+# StorageClass parameters, and a storageClass-level mapOptions key is not
+# rendered by the chart.
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: rook-ceph-cluster
+    patch: |-
+      - op: add
+        path: /spec/valuesFrom/-
+        value:
+          kind: ConfigMap
+          name: rook-ceph-cluster-platform-values
+          valuesKey: rbd-map-options
+          targetPath: cephBlockPools[0].storageClass.parameters.mapOptions

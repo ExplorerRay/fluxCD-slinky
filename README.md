@@ -36,14 +36,13 @@ a single-node and a multi-node variant:
   schedulable node.
 - `clusters/kubeadm-multi` — kubeadm/kubespray cluster entrypoint, separate
   control-plane and workers.
-- `base` directories contain shared resources.
-- `overlays/kind` and `overlays/kubeadm` contain cluster-specific resources and
-  values, shared by both variants of that platform (single and multi) — this
-  rule still holds. The one exception is `rook-ceph`, which has per-variant
-  overlays (`overlays/kind-single`, `overlays/kind-multi`,
-  `overlays/kubeadm-single`, `overlays/kubeadm-multi`) layered on top of the
-  shared overlay to bake in the deterministic OSD node hostname for each
-  variant.
+- `base` directories contain shared resources and Helm values.
+- `overlays/kind` and `overlays/kubeadm` contain only what differs per
+  platform, shared by both variants of that platform (single and multi). The
+  one exception is `rook-ceph`, which has per-variant overlays
+  (`overlays/kind-single`, `overlays/kind-multi`, `overlays/kubeadm-single`,
+  `overlays/kubeadm-multi`) layered on top of the shared overlay to bake in
+  the deterministic OSD node hostname for each variant.
 
 See:
 

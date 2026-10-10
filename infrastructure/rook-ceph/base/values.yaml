@@ -1,21 +1,19 @@
 ---
-# Values for the rook-ceph-cluster Helm chart, shared by both kind variants
-# (kind-single, kind-multi).
+# Values for the rook-ceph-cluster Helm chart, shared by every variant.
 #
 # Dev-grade, single-node Ceph: one mon, one mgr, one OSD backed by a loopback
-# device over a sparse file (/dev/loop100, mounted into the kind node). Exposes
-# two StorageClasses: ceph-block (RBD, ReadWriteOnce, the cluster default) and
-# ceph-filesystem (CephFS, ReadWriteMany, backing the shared Slurm /home). No
-# RGW. Requests are smaller than the kubeadm overlay since kind runs inside
-# Docker on a developer workstation.
+# device over a sparse file (/dev/loop100). Exposes two StorageClasses:
+# ceph-block (RBD, ReadWriteOnce, the cluster default) and ceph-filesystem
+# (CephFS, ReadWriteMany, backing the shared Slurm /home). No RGW.
 #
-# The OSD node placement (cephClusterSpec.storage.nodes) is NOT set here — it
-# differs per variant and is supplied by a second HelmRelease valuesFrom entry
-# layered on top by overlays/kind-single or overlays/kind-multi (see their
-# node-values.yaml).
+# helmrelease-cluster.yaml layers two more ConfigMaps over this file:
+#   - platform-values.yaml (overlays/kind, overlays/kubeadm): the mgr, mon and
+#     osd resources, sized per platform. kind also sets the RBD mapOptions.
+#   - node-values.yaml (overlays/<platform>-single, -multi): the OSD node
+#     placement, cephClusterSpec.storage.nodes.
 #
 # Storage upgrade path: once >=3 real nodes with real disks exist, replace the
-# /dev/loop100 device entry below with real disk/LV names, bump
+# /dev/loop100 device in node-values.yaml with real disk/LV names, bump
 # cephBlockPools[].spec.replicated.size to 3, and change failureDomain to host.
 # Do the same for the CephFS pools and set activeStandby to true.
 
@@ -54,41 +52,14 @@ cephClusterSpec:
     allowMultiplePerNode: true
   dashboard:
     enabled: true
-  # Smaller requests/limits than kubeadm for the local Docker-backed node.
-  # mgr matches the rook-ceph-cluster chart defaults — anything lower gets the
-  # mgr OOM-killed while it is still loading its python modules.
-  resources:
-    mgr:
-      requests:
-        cpu: "100m"
-        memory: "512Mi"
-      limits:
-        memory: "1Gi"
-    # mon matches the rook-ceph-cluster chart defaults, same rationale as mgr
-    # above.
-    mon:
-      requests:
-        cpu: "100m"
-        memory: "1Gi"
-      limits:
-        memory: "2Gi"
-    # osd request matches the rook-ceph-cluster chart default (4Gi); limit
-    # gives ~1.5x headroom over osd_memory_target, since BlueStore routinely
-    # overshoots the target before cache trimming catches up (same failure
-    # shape mgr had: target == limit leaves no room).
-    osd:
-      requests:
-        cpu: "100m"
-        memory: "4Gi"
-      limits:
-        memory: "6Gi"
   storage:
     useAllNodes: false
     useAllDevices: false
-    # nodes list is supplied per-variant via the overlay's node-values.yaml
-    # (overlays/kind-single, overlays/kind-multi).
+    # The nodes list is supplied per variant by node-values.yaml.
 
 # One replicated pool exposing the default ceph-block StorageClass.
+# Keep ceph-blockpool first: overlays/kind sets its mapOptions by index
+# (cephBlockPools[0]), so reordering or prepending a pool moves that option.
 cephBlockPools:
   - name: ceph-blockpool
     spec:
@@ -104,16 +75,6 @@ cephBlockPools:
       parameters:
         imageFormat: "2"
         imageFeatures: layering
-        # Fail krbd I/O with EIO after 60s instead of retrying forever. On
-        # kind, deleting the cluster orphans any still-mapped RBD devices in
-        # the shared host kernel; without a timeout, reads on them hang in
-        # D-state (which wedges device scans and force-unmap) and only a host
-        # reboot recovers. See the teardown order in bootstrap/kind/README.md
-        # — this is the safety net for when that ordering is missed. Must live
-        # in `parameters` (the CSI driver reads it from the StorageClass
-        # parameters map); a `mapOptions` key at the storageClass level is not
-        # rendered by the chart and is silently ignored.
-        mapOptions: osd_request_timeout=60
         # CSI credentials for provision/expand/node-stage. These come from the
         # chart's default parameters and MUST be restored when overriding the
         # parameters map (Helm replaces it wholesale) — without them the
@@ -147,11 +108,10 @@ cephFileSystems:
         # Rook always adds one standby per active MDS (2 pods); false makes it
         # a cold standby rather than standby-replay.
         activeStandby: false
-        # No priorityClassName, as on kubeadm: the chart default
-        # system-cluster-critical lets the MDS preempt workloads on a full node
-        # (observed evicting ipa-0 on kubeadm-single; kind-single packs every
-        # request onto one node the same way). At default priority it waits
-        # Pending.
+        # No priorityClassName: the chart default system-cluster-critical lets
+        # the MDS preempt workloads on a full node (observed evicting ipa-0 on a
+        # 20GiB kubeadm-single node; kind-single packs every request onto one
+        # node the same way). At default priority it waits Pending.
         # Per MDS pod. Rook sets mds_cache_memory_limit to half the limit, so
         # the cache is sized by the limit, not the request. The request only
         # reserves the idle footprint (measured 46Mi active, 30Mi standby).

@@ -6,3 +6,9 @@ resources:
   - namespace.yaml
   - helmrelease-operator.yaml
   - helmrelease-cluster.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: rook-ceph-cluster-values
+    files:
+      - values.yaml

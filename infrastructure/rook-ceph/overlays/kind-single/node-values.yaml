@@ -1,6 +1,6 @@
 ---
-# Per-variant OSD node placement, merged over the shared values via a second
-# HelmRelease valuesFrom entry (Helm replaces the whole nodes list).
+# Per-variant OSD node placement, the last HelmRelease valuesFrom entry
+# (see base/helmrelease-cluster.yaml; Helm replaces the whole nodes list).
 # The node name MUST match the Kubernetes node hostname for this variant.
 cephClusterSpec:
   storage:

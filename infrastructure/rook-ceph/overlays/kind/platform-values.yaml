@@ -1,0 +1,31 @@
+---
+# kind's rook-ceph-cluster values, merged over base/values.yaml.
+cephClusterSpec:
+  # Smaller requests/limits than kubeadm for the local Docker-backed node.
+  # mgr matches the rook-ceph-cluster chart defaults — anything lower gets the
+  # mgr OOM-killed while it is still loading its python modules.
+  resources:
+    mgr:
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+      limits:
+        memory: "1Gi"
+    # mon matches the rook-ceph-cluster chart defaults, same rationale as mgr
+    # above.
+    mon:
+      requests:
+        cpu: "100m"
+        memory: "1Gi"
+      limits:
+        memory: "2Gi"
+    # osd request matches the rook-ceph-cluster chart default (4Gi); limit
+    # gives ~1.5x headroom over osd_memory_target, since BlueStore routinely
+    # overshoots the target before cache trimming catches up (same failure
+    # shape mgr had: target == limit leaves no room).
+    osd:
+      requests:
+        cpu: "100m"
+        memory: "4Gi"
+      limits:
+        memory: "6Gi"
