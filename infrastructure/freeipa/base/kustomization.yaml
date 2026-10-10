@@ -5,5 +5,4 @@ namespace: freeipa
 resources:
   - namespace.yaml
   - service.yaml
-  - service-web.yaml
   - statefulset.yaml

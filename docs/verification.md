@@ -89,7 +89,7 @@ kubectl -n freeipa exec ipa-0 -- ipactl status
 Also confirm at least one user/group exists to authenticate as — FreeIPA
 starts empty, so with no users created, §5 will fail for a different reason
 than a broken server. See the FreeIPA section of [bootstrap.md](bootstrap.md)
-for creating users via the web UI or the CLI, and for the one-time step of
+for creating users and groups with the `ipa` CLI, and for the one-time step of
 extracting the FreeIPA CA into the `slurm` namespace (`freeipa-ca` ConfigMap),
 which SSSD needs to validate the LDAPS certificate.
 
@@ -216,12 +216,16 @@ This check only proves anything if the test user has a supplementary
 group to begin with. On a freshly built cluster, FreeIPA's default
 `ipausers` group is non-POSIX and carries no `gidNumber`, so a user with
 no other memberships has none — both sides trivially match. Put the user
-in a POSIX group first:
+in a POSIX group first — the user-creation block in
+[bootstrap.md](bootstrap.md#freeipa) does this — and confirm it took
+before trusting a pass:
 
 ```sh
-ipa group-add sciteam
-ipa group-add-member sciteam --users=<user>
+id -Gn <user>                 # on the login node: more than one group
 ```
+
+If it lists only the user's own group, add a POSIX group membership with
+the bootstrap block's `ipa group-add-member` line and flush the SSSD cache.
 
 Only then does a pass mean anything.
 

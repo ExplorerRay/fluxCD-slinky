@@ -203,52 +203,79 @@ cannot perform either:
    ```
 
 2. **Create users and groups.** FreeIPA starts empty, so Slurm cannot
-   resolve anyone yet. Two ways to do this: the web UI, or a CLI path that
-   works headlessly (no browser, scriptable, works on a bare server).
-
-   **Web UI.** The management console is exposed (DEV ONLY) via
-   the `ipa-web` NodePort on **30443**. FreeIPA enforces a referer/host check
-   against its FQDN, so browse it by that name rather than the raw node IP — add
-   to your client `/etc/hosts`:
-
-   ```
-   <node-ip>  ipa.freeipa.svc.cluster.local
-   ```
-
-   then open `https://ipa.freeipa.svc.cluster.local:30443/ipa/ui`, log in as
-   `admin` (dev password from the FreeIPA secret), and add users/groups under
-   **Identity**. Trust the FreeIPA CA (`ca.crt`) to avoid the TLS warning. On
-   kind (where NodePorts aren't host-mapped by default) use `kubectl -n freeipa
-   port-forward sts/ipa 30443:443` and browse `https://…:30443/ipa/ui` instead.
-
-   **CLI.** No NodePort or browser needed — exec straight into the IPA pod:
+   resolve anyone yet. The FreeIPA web UI is deliberately not exposed — no
+   Service publishes it outside the cluster — so users and groups are managed
+   with the `ipa` CLI, exec'd straight into the IPA pod. No browser, `/etc/hosts`
+   entry or port-forward is needed, and it is scriptable:
 
    ```sh
    kubectl -n freeipa exec sts/ipa -- bash -c '
+     set -e
      echo "<admin-password>" | kinit admin
      ipa user-add slurmuser --first=Slurm --last=User --shell=/bin/bash
      printf "<password>\n<password>\n" | ipa passwd slurmuser
-     ipa user-mod slurmuser --setattr=krbpasswordexpiration=20301231000000Z'
+     ipa user-mod slurmuser --setattr=krbpasswordexpiration=20301231000000Z
+     ipa group-add sciteam
+     ipa group-add-member sciteam --users=slurmuser'
    ```
+
+   The block runs once per user: `set -e` stops it at the first failure, so a
+   wrong admin password fails at `kinit` instead of cascading, and a re-run
+   for an existing user stops at `ipa user-add` before `ipa passwd` can
+   silently reset that user's password. To add another user, change the
+   login and drop the `ipa group-add sciteam` line (the group already
+   exists); keep `ipa group-add-member`.
 
    Both passwords are inline above, which puts them in your shell history
    and in the pod's process arguments, readable by anything that can `ps` in
    that container. That is acceptable only because these are DEV ONLY
    credentials; for anything real, drop the literals and let `kinit` and
-   `ipa passwd` prompt interactively (`kubectl exec -it`).
+   `ipa passwd` prompt interactively (`kubectl -n freeipa exec -it sts/ipa --
+   bash`). The admin password is the one in the FreeIPA secret:
 
-   The last line matters: `ipa passwd` sets the password but leaves it
-   **expired**, which forces a password change at the next login. That
-   interactive prompt blocks non-interactive SSH entirely (e.g. `sbatch`
+   ```sh
+   kubectl -n freeipa get secret freeipa-admin -o jsonpath='{.data.password}' | base64 -d
+   ```
+
+   The `admin` ticket lands in a persistent kernel keyring
+   (`KEYRING:persistent:0:0`), so later `kubectl exec` calls reuse it without
+   another `kinit` until it expires (24h by default). The keyring belongs to
+   the pod, so a restart or reschedule of `ipa-0` drops the ticket early. Once
+   it is gone, `ipa` commands fail with "did not receive Kerberos credentials";
+   get a fresh one first:
+
+   ```sh
+   kubectl -n freeipa exec sts/ipa -- \
+     bash -c 'echo "<admin-password>" | kinit admin'
+   ```
+
+   The `krbpasswordexpiration` line matters: `ipa passwd` sets the password but
+   leaves it **expired**, which forces a password change at the next login.
+   That interactive prompt blocks non-interactive SSH entirely (e.g. `sbatch`
    invoked from a script, or any automated test), so push the Kerberos
    password-expiration attribute out past it as shown.
 
-   Groups work the same way from the CLI (`ipa group-add`,
-   `ipa group-add-member --users=<user>`). SSSD caches aggressively, so a
-   membership change may not be visible in a login pod until the cache is
-   flushed (`sss_cache -E; pkill -HUP sssd` in the login pod) or its TTL
-   expires on its own — and the Rocky login image ships no `sss_cache`
-   binary, see
+   The group is optional for logging in, but `ipa group-add` creates a POSIX
+   group (with a `gidNumber`), unlike FreeIPA's default `ipausers` group, which
+   is non-POSIX and invisible to `id`. A supplementary POSIX group is what the
+   group-parity check in [verification.md](verification.md) needs to mean
+   anything. Day-to-day management stays on the same CLI:
+
+   | Task | Command |
+   |------|---------|
+   | List / inspect users | `ipa user-find`, `ipa user-show <user>` |
+   | Reset a password | `ipa passwd <user>`, then the `krbpasswordexpiration` line again |
+   | Disable / re-enable an account | `ipa user-disable <user>`, `ipa user-enable <user>` |
+   | Clear a failed-login lockout | `ipa user-unlock <user>` |
+   | Delete a user | `ipa user-del <user>` |
+   | Inspect a group | `ipa group-show <group>` |
+   | Remove from a group | `ipa group-remove-member <group> --users=<user>` |
+   | Delete a group | `ipa group-del <group>` |
+
+   SSSD caches aggressively, so a membership change may not be visible in a
+   login pod until the cache is flushed (`sss_cache -E; pkill -HUP sssd` in the
+   login pod) or its TTL expires on its own — and the Rocky login image ships no
+   `sss_cache` binary, see
    [troubleshooting.md](troubleshooting.md#sss_cache-is-not-found-when-trying-to-flush-the-sssd-cache-rocky-login-image).
 
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->
