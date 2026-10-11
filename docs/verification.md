@@ -7,6 +7,25 @@ the manifests applied; they say nothing about identity. Each layer below must
 be checked explicitly, in order, because a failure in one layer can hide
 behind a healthy layer above it.
 
+## Automated checks
+
+`tests/e2e/checks.sh` scripts sections 1–5 below for a kind-single-shaped
+cluster and is what the e2e workflow (`.github/workflows/e2e.yaml`) runs on
+every pull request that touches manifests. It logs in as a FreeIPA test user
+(`E2E_USER`, default `e2euser`) over the login NodePort, so it needs `ssh`
+and `sshpass`, and the user must exist — `tests/e2e/deploy.sh` creates it.
+Against a cluster you deployed by hand, create that user (see
+[bootstrap.md](bootstrap.md#freeipa)) or point `E2E_USER`, `E2E_GROUP` and
+`E2E_PASSWORD` at an existing one, then:
+
+```sh
+bash tests/e2e/checks.sh
+```
+
+It creates that user's home on first login if needed, writes `from-login`,
+`from-compute` and `slurm-<jobid>.out` into it, and submits short jobs, which
+appear in Slurm accounting.
+
 ## 1. Cluster is up
 
 For kind:
