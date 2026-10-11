@@ -1,0 +1,53 @@
+---
+# CI-only: kind-single with smaller Rook-Ceph CPU and memory requests so the
+# whole stack fits a 4-vCPU / 16 GB GitHub-hosted runner (.github/workflows/e2e.yaml).
+# This directory is the entire difference between kind-ci and kind-single.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: rook-ceph
+resources:
+  - ../kind-single
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: rook-ceph-cluster-ci-values
+    files:
+      - ci-values.yaml
+patches:
+  # Appended after kind-single's entries, so these values win.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: rook-ceph-cluster
+    patch: |-
+      - op: add
+        path: /spec/valuesFrom/-
+        value:
+          kind: ConfigMap
+          name: rook-ceph-cluster-ci-values
+          valuesKey: ci-values.yaml
+  # Operator savings: one CSI provisioner per driver instead of two (four 1Gi
+  # pods become two); no snapshotter sidecars, since CI takes no snapshots;
+  # operator CPU request 200m -> 100m. The resources add replaces the chart's
+  # map, so the memory defaults (128Mi request, 512Mi limit) are restated.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: rook-ceph
+    patch: |-
+      - op: add
+        path: /spec/values/csi
+        value:
+          provisionerReplicas: 1
+          enableCephfsSnapshotter: false
+          enableRBDSnapshotter: false
+      - op: add
+        path: /spec/values/resources
+        value:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            memory: 512Mi

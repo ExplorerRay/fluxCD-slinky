@@ -36,6 +36,10 @@ a single-node and a multi-node variant:
   schedulable node.
 - `clusters/kubeadm-multi` — kubeadm/kubespray cluster entrypoint, separate
   control-plane and workers.
+- `clusters/kind-ci` — CI only: kind-single with smaller Rook-Ceph CPU and
+  memory requests so the whole stack fits a 4-vCPU / 16 GB GitHub-hosted
+  runner. Deployed by
+  the e2e workflow (`.github/workflows/e2e.yaml`); not for manual use.
 - `base` directories contain shared resources and Helm values.
 - `overlays/kind` and `overlays/kubeadm` contain only what differs per
   platform, shared by both variants of that platform (single and multi). The
