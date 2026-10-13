@@ -1,0 +1,35 @@
+---
+# CI-only rook-ceph-cluster values for clusters/kind-ci, merged last (after
+# base, platform and node values). The free GitHub runner has 4 vCPU and 16
+# GB of RAM; the full stack requests ~5.7 cores and ~15 GiB (measured,
+# DaemonSets counted once), so CPU and memory requests both shrink. Actual use
+# is far lower. Do not copy into a real overlay: 2 GiB is Ceph's documented
+# floor for osd_memory_target, not a recommendation.
+# Helm replaces this string wholesale, so it restates the whole [osd] section.
+configOverride: |
+  [osd]
+  osd_memory_target = 2147483648
+
+cephClusterSpec:
+  # Drops a 100m/100Mi sidecar from mon, mgr, osd and both MDS; CI never reads
+  # Ceph log files.
+  logCollector:
+    enabled: false
+  # Helm merges these maps over kind's platform values, so the mon/mgr memory
+  # requests and limits are kept; only the CPU request changes.
+  resources:
+    mon:
+      requests:
+        cpu: "50m"
+    mgr:
+      requests:
+        cpu: "50m"
+
+    # kind/platform-values.yaml requests 4Gi with a 6Gi limit; keep the same
+    # ~1.5x headroom over the (halved) memory target.
+    osd:
+      requests:
+        cpu: "50m"
+        memory: "2Gi"
+      limits:
+        memory: "3Gi"

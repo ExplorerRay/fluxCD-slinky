@@ -9,6 +9,7 @@ clusters/
   kind-multi/
   kubeadm-single/
   kubeadm-multi/
+  kind-ci/            # CI only — see "CI entrypoint" below
 ```
 
 Shared component resources and Helm values live in `base` directories.
@@ -56,6 +57,7 @@ infrastructure/rook-ceph/
     kind-multi/         # resources: [../kind]    + node-values.yaml
     kubeadm-single/     # resources: [../kubeadm] + node-values.yaml
     kubeadm-multi/      # resources: [../kubeadm] + node-values.yaml
+    kind-ci/            # resources: [../kind-single] + ci-values.yaml (CI only)
 ```
 
 Each variant overlay's `node-values.yaml` supplies just the OSD node name
@@ -66,6 +68,21 @@ hostname is layered on top of the platform and shared values. The cluster
 entrypoints in `clusters/` point the `rook-ceph` Kustomization at the matching
 variant overlay, while every other component's Kustomization still points at
 the shared `overlays/kind` or `overlays/kubeadm`.
+
+## CI entrypoint
+
+`clusters/kind-ci` is not a cluster anyone runs by hand. It is what the e2e
+workflow (`.github/workflows/e2e.yaml`) deploys on a 4-vCPU / 16 GB
+GitHub-hosted runner: kind-single in every component except rook-ceph, which
+points at `infrastructure/rook-ceph/overlays/kind-ci`, and with CI-only timing
+on its Kustomizations (`retryInterval: 1m`, a 25m FreeIPA timeout). The
+overlay layers on `kind-single` and trims CPU and memory requests (~5.7 to
+~3.7 cores, ~15 to ~11 GiB): a smaller OSD (`ci-values.yaml`, request 2Gi,
+`osd_memory_target` 2 GiB), one CSI provisioner per driver without snapshotter
+sidecars, no Ceph log-collector sidecars, and lower mon/mgr/osd/operator CPU
+requests. It has no `flux-system/` directory: `tests/e2e/deploy.sh` applies
+kind-single's pinned Flux components and creates the sync objects itself,
+pointed at the commit under test.
 
 ## Bootstrap Directory
 

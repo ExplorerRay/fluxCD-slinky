@@ -1,0 +1,133 @@
+name: e2e
+
+# Deploys the whole stack on kind-single (clusters/kind-ci: slimmer Rook-Ceph
+# requests so it fits the 4-vCPU / 16 GB runner) and runs tests/e2e/checks.sh.
+# Docs-only changes skip it.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'clusters/**'
+      - 'infrastructure/**'
+      - 'applications/**'
+      - 'repositories/**'
+      - 'bootstrap/kind/**'
+      - 'tests/e2e/**'
+      - '.github/workflows/e2e.yaml'
+
+concurrency:
+  group: e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kind-single:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 100
+    env:
+      KIND_VERSION: v0.32.0
+      KUBECTL_VERSION: v1.36.1
+      FLUX_VERSION: 2.9.4
+      E2E_USER: e2euser
+      E2E_GROUP: e2eteam
+      E2E_PASSWORD: E2e-dev-only-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Same commit Flux deploys (pull_request otherwise checks out the merge).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Prepare the runner
+        run: |
+          # Removing the preinstalled toolchains makes room for the stack's ~19 GiB of images and volumes.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          # Dozens of pods on one node exhaust the default inotify limits.
+          sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
+          # Ubuntu 26.04 restricts unprivileged user namespaces via AppArmor; FreeIPA runs systemd in a user-namespaced pod (hostUsers: false).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          df -h / /mnt
+          free -h
+
+      - name: Load the ceph and rbd kernel modules
+        run: |
+          # CephFS backs the shared Slurm /home; RBD volumes back FreeIPA and MariaDB.
+          for mod in ceph rbd; do
+            if ! sudo modprobe "$mod"; then
+              sudo apt-get update
+              if ! sudo apt-get install -y "linux-modules-extra-$(uname -r)" || ! sudo modprobe "$mod"; then
+                echo "::error::$mod kernel module unavailable on kernel $(uname -r); the Ceph volumes cannot work on this runner"
+                exit 1
+              fi
+            fi
+          done
+          # The ceph filesystem type is registered once the module is loaded or built in.
+          if ! grep -qw ceph /proc/filesystems; then
+            echo "::error::ceph kernel module unavailable on kernel $(uname -r); the CephFS /home cannot work on this runner"
+            exit 1
+          fi
+          # /sys/module/rbd exists whether rbd is a module or built in.
+          if ! test -d /sys/module/rbd; then
+            echo "::error::rbd kernel module unavailable on kernel $(uname -r); the RBD volumes cannot work on this runner"
+            exit 1
+          fi
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+          curl -fsSLo kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" | tar xz flux
+          sudo install -m 0755 kind kubectl flux /usr/local/bin/
+          rm kind kubectl flux
+
+      - name: Create the kind-single cluster
+        env:
+          # Sparse OSD image on the runner's larger /mnt disk.
+          ROOK_OSD_IMG: /mnt/rook/osd0.img
+          ROOK_OSD_SIZE: 60G
+        run: bash bootstrap/kind/setup.sh single
+
+      - name: Deploy with Flux
+        # Leaves time for the failure dump; a job-level timeout cancels the job and skips `if: failure()` steps.
+        timeout-minutes: 70
+        env:
+          # Flux clones the PR head (a fork for fork PRs) anonymously.
+          REPO_URL: ${{ github.event.pull_request.head.repo.clone_url || format('{0}/{1}.git', github.server_url, github.repository) }}
+          REPO_BRANCH: ${{ github.head_ref || github.ref_name }}
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash tests/e2e/deploy.sh
+
+      - name: Run checks
+        timeout-minutes: 10
+        run: bash tests/e2e/checks.sh
+
+      - name: Dump cluster state
+        if: failure()
+        run: |
+          mkdir -p e2e-dump
+          {
+            flux get all -A
+            kubectl describe nodes
+            kubectl get pods -A -o wide
+            kubectl get events -A --sort-by=.lastTimestamp
+          } > e2e-dump/summary.txt 2>&1 || true
+          kubectl get pods -A --no-headers |
+            awk '{split($3, r, "/"); if (r[1] != r[2] && $4 != "Completed") print $1, $2}' |
+            while read -r ns pod; do kubectl -n "$ns" describe pod "$pod"; done \
+            > e2e-dump/unready-pods.txt 2>&1 || true
+          kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status > e2e-dump/ceph.txt 2>&1 || true
+          kubectl -n freeipa exec ipa-0 -- ipactl status > e2e-dump/ipa.txt 2>&1 || true
+          kubectl -n slurm exec deploy/slurm-login-slinky -c login -- sinfo > e2e-dump/sinfo.txt 2>&1 || true
+          kind export logs e2e-dump/kind-logs --name kind || true
+          cat e2e-dump/summary.txt
+
+      - name: Upload cluster state
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-dump
+          path: e2e-dump
