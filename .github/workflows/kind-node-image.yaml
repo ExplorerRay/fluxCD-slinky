@@ -1,0 +1,49 @@
+name: kind-node-image
+
+# Builds the e2e kind node image with tests/e2e/preload-images.txt already in
+# containerd and pushes it to GHCR; e2e.yaml boots kind-single from it instead
+# of pulling the stack from upstream registries on every run.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tests/e2e/preload-images.txt'
+      - 'tests/e2e/build-node-image.sh'
+      - '.github/workflows/kind-node-image.yaml'
+
+concurrency:
+  group: kind-node-image
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      # Kubernetes version of build-node-image.sh's BASE_IMAGE; e2e.yaml pulls the same tag.
+      KIND_NODE_TAG: v1.36.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build
+        env:
+          IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/kind-node"
+          bash tests/e2e/build-node-image.sh "$image:$KIND_NODE_TAG"
+          docker tag "$image:$KIND_NODE_TAG" "$image:$KIND_NODE_TAG-${GITHUB_SHA::7}"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: Push
+        run: |
+          docker push "$IMAGE:$KIND_NODE_TAG-${GITHUB_SHA::7}"
+          docker push "$IMAGE:$KIND_NODE_TAG"

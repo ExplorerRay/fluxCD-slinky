@@ -78,7 +78,10 @@ fi
 # kernel.
 sudo modprobe ceph
 
-kind create cluster --name kind --config "$REPO_ROOT/bootstrap/kind/kind-config-${VARIANT}.yaml"
+# KIND_NODE_IMAGE overrides kind's default node image; the e2e workflow passes
+# one with the stack's images preloaded (tests/e2e/build-node-image.sh).
+kind create cluster --name kind --config "$REPO_ROOT/bootstrap/kind/kind-config-${VARIANT}.yaml" \
+  ${KIND_NODE_IMAGE:+--image "$KIND_NODE_IMAGE"}
 
 # Disable auto-restart on the node containers. kind defaults to restarting
 # them on boot, but a rebooted cluster is broken here (see above) — and worse,

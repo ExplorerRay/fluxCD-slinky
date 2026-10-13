@@ -84,6 +84,16 @@ requests. It has no `flux-system/` directory: `tests/e2e/deploy.sh` applies
 kind-single's pinned Flux components and creates the sync objects itself,
 pointed at the commit under test.
 
+The e2e cluster boots from a kind node image with the stack's images already
+in containerd (`ghcr.io/<owner>/<repo>/kind-node:<k8s version>`), so a run
+does not pull ~3.5 GB from upstream registries. The image list is
+`tests/e2e/preload-images.txt`; `tests/e2e/build-node-image.sh` bakes it into
+kind's default node image, and `.github/workflows/kind-node-image.yaml`
+rebuilds and pushes it whenever the list changes on `main` (or on manual
+dispatch). The list is a cache, not a pin: an image missing from it is pulled
+as usual, and the e2e job warns with the exact references to add. If the
+image cannot be pulled at all, e2e falls back to kind's default node image.
+
 ## Bootstrap Directory
 
 The `bootstrap/` directory contains one-time cluster provisioning scripts and

@@ -2,7 +2,9 @@ name: e2e
 
 # Deploys the whole stack on kind-single (clusters/kind-ci: slimmer Rook-Ceph
 # requests so it fits the 4-vCPU / 16 GB runner) and runs tests/e2e/checks.sh.
-# Docs-only changes skip it.
+# Docs-only changes skip it. kind boots from the preloaded node image that
+# kind-node-image.yaml publishes, so the stack's images are not pulled from
+# upstream registries.
 on:
   workflow_dispatch:
   pull_request:
@@ -21,6 +23,7 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   kind-single:
@@ -30,6 +33,8 @@ jobs:
       KIND_VERSION: v0.32.0
       KUBECTL_VERSION: v1.36.1
       FLUX_VERSION: 2.9.4
+      # Tag kind-node-image.yaml publishes; must match kind's default node version.
+      KIND_NODE_TAG: v1.36.1
       E2E_USER: e2euser
       E2E_GROUP: e2eteam
       E2E_PASSWORD: E2e-dev-only-1
@@ -42,7 +47,8 @@ jobs:
 
       - name: Prepare the runner
         run: |
-          # Removing the preinstalled toolchains makes room for the stack's ~19 GiB of images and volumes.
+          # Removing the preinstalled toolchains makes room for the stack's ~19 GiB of images and volumes,
+          # plus ~9 GiB for the preloaded node image and its seeded /var.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           # Dozens of pods on one node exhaust the default inotify limits.
           sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
@@ -84,12 +90,28 @@ jobs:
           sudo install -m 0755 kind kubectl flux /usr/local/bin/
           rm kind kubectl flux
 
+      - name: Pull the preloaded kind node image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/kind-node:$KIND_NODE_TAG"
+          # A missing or unreadable image only costs speed: fall back to kind's default node image.
+          if echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin &&
+            docker pull --quiet "$image"; then
+            echo "KIND_NODE_IMAGE=$image" >> "$GITHUB_ENV"
+          else
+            echo "::warning::could not pull $image (run the kind-node-image workflow); every image is pulled from upstream"
+          fi
+
       - name: Create the kind-single cluster
+        id: cluster
         env:
           # Sparse OSD image on the runner's larger /mnt disk.
           ROOK_OSD_IMG: /mnt/rook/osd0.img
           ROOK_OSD_SIZE: 60G
-        run: bash bootstrap/kind/setup.sh single
+        run: |
+          bash bootstrap/kind/setup.sh single
+          # Baseline for the preload report: anything not here by the end was pulled from a registry.
+          docker exec kind-control-plane crictl images -o json |
+            jq -r '.images[].repoTags[]' | sort -u > "$RUNNER_TEMP/images-at-start.txt"
 
       - name: Deploy with Flux
         # Leaves time for the failure dump; a job-level timeout cancels the job and skips `if: failure()` steps.
@@ -104,6 +126,23 @@ jobs:
       - name: Run checks
         timeout-minutes: 10
         run: bash tests/e2e/checks.sh
+
+      - name: Report images missing from the preload
+        if: ${{ !cancelled() && steps.cluster.outcome == 'success' }}
+        run: |
+          docker exec kind-control-plane crictl images -o json |
+            jq -r '.images[].repoTags[]' | sort -u > "$RUNNER_TEMP/images-at-end.txt"
+          pulled="$(comm -13 "$RUNNER_TEMP/images-at-start.txt" "$RUNNER_TEMP/images-at-end.txt")"
+          # The preload keeps its content next to the unpacked layers; watch the headroom.
+          df -h / /mnt
+          if [[ -z "${KIND_NODE_IMAGE:-}" ]]; then
+            echo "kind's default node image was used; nothing to compare"
+          elif [[ -z "$pulled" ]]; then
+            echo "every image came from the preloaded node image"
+          else
+            echo "$pulled"
+            echo "::warning::$(wc -l <<<"$pulled") image(s) were pulled from upstream; add them to tests/e2e/preload-images.txt: $(paste -sd' ' <<<"$pulled")"
+          fi
 
       - name: Dump cluster state
         if: failure()

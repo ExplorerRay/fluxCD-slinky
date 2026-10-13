@@ -1,0 +1,52 @@
+# Images baked into the e2e kind node image (tests/e2e/build-node-image.sh,
+# .github/workflows/kind-node-image.yaml) so CI does not pull them from
+# upstream registries on every run. One fully qualified reference per line;
+# kind's own images (kube-*, etcd, coredns, kindnetd, local-path) are already
+# in the base node image.
+#
+# Missing entries only cost a normal pull: the e2e job lists every image it
+# had to pull as a warning. Add those here (and drop retired ones) when a
+# chart's patch range or a pinned tag moves.
+
+# Flux (clusters/kind-single/flux-system/gotk-components.yaml)
+ghcr.io/fluxcd/helm-controller:v1.5.4
+ghcr.io/fluxcd/image-automation-controller:v1.1.2
+ghcr.io/fluxcd/image-reflector-controller:v1.1.1
+ghcr.io/fluxcd/kustomize-controller:v1.8.4
+ghcr.io/fluxcd/notification-controller:v1.8.4
+ghcr.io/fluxcd/source-controller:v1.8.3
+
+# cert-manager (chart 1.20.x)
+quay.io/jetstack/cert-manager-cainjector:v1.20.4
+quay.io/jetstack/cert-manager-controller:v1.20.4
+quay.io/jetstack/cert-manager-startupapicheck:v1.20.4
+quay.io/jetstack/cert-manager-webhook:v1.20.4
+
+# Rook-Ceph (chart v1.15.x); kind-ci runs no CSI snapshotter sidecars
+docker.io/rook/ceph:v1.15.9
+quay.io/ceph/ceph:v18.2.7
+quay.io/cephcsi/cephcsi:v3.12.3
+registry.k8s.io/sig-storage/csi-attacher:v4.6.1
+registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.11.1
+registry.k8s.io/sig-storage/csi-provisioner:v5.0.1
+registry.k8s.io/sig-storage/csi-resizer:v1.11.1
+
+# FreeIPA
+quay.io/freeipa/freeipa-server:rocky-9-4.13.1
+
+# MariaDB (operator chart 26.x)
+ghcr.io/mariadb-operator/mariadb-operator:26.10.1
+docker.io/library/mariadb:11.8.8
+
+# Slinky (charts 1.2.x)
+ghcr.io/slinkyproject/slurm-operator:1.2.3
+ghcr.io/slinkyproject/slurm-operator-webhook:1.2.3
+ghcr.io/slinkyproject/login:26.05-ubuntu26.04
+ghcr.io/slinkyproject/slurmctld:26.05-ubuntu26.04
+ghcr.io/slinkyproject/slurmd:26.05-ubuntu26.04
+ghcr.io/slinkyproject/slurmdbd:26.05-ubuntu26.04
+ghcr.io/slinkyproject/slurmrestd:26.05-ubuntu26.04
+# The chart's logfile/initconf sidecars use :latest, but with an explicit
+# IfNotPresent pull policy, so the baked-in copy is used.
+docker.io/library/alpine:latest
+docker.io/library/alpine:3.24.2
