@@ -127,9 +127,29 @@ jobs:
         timeout-minutes: 10
         run: bash tests/e2e/checks.sh
 
-      - name: Report images missing from the preload
+      - name: Report image pulls
         if: ${{ !cancelled() && steps.cluster.outcome == 'success' }}
         run: |
+          # Time the kubelet spent pulling (it pulls one image at a time), from Pulled events.
+          # Events expire after 1h, so on a slow run the earliest pulls may be missing.
+          kubectl get events -A --field-selector reason=Pulled -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' |
+            awk '
+              # Go duration (1m2.5s, 3.706s, 512ms) to seconds.
+              function secs(d,   t, n, u) {
+                t = 0
+                while (match(d, /^[0-9.]+(h|ms|m|s)/)) {
+                  n = substr(d, 1, RLENGTH); d = substr(d, RLENGTH + 1)
+                  u = n; sub(/^[0-9.]+/, "", u); n += 0
+                  t += (u == "h") ? n * 3600 : (u == "m") ? n * 60 : (u == "ms") ? n / 1000 : n
+                }
+                return t
+              }
+              /^Successfully pulled image/ {
+                split($0, q, "\""); s = secs($6)
+                printf "%8.1fs  %s\n", s, q[2]; total += s; count++
+              }
+              END { printf "%d image(s) pulled from upstream, %.0fs of pull time\n", count, total }
+            '
           docker exec kind-control-plane crictl images -o json |
             jq -r '.images[].repoTags[]' | sort -u > "$RUNNER_TEMP/images-at-end.txt"
           pulled="$(comm -13 "$RUNNER_TEMP/images-at-start.txt" "$RUNNER_TEMP/images-at-end.txt")"
