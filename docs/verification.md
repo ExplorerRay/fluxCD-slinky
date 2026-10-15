@@ -263,22 +263,35 @@ sacct -a -X --format=JobID,User,UID,Group,GID,Account,State
 ```
 
 `User` and `Group` must both be names rather than numbers, and `Account`
-must be populated. This is worth re-running after any change to
+must be populated. An empty `Account` (with `AssocID` 0 if you add that
+column) means the user was never registered in Slurm accounting — so
+does `AssocID` 0 next to a populated `Account`, which is what a user who
+passed `-A` gets. Either way, do
+step 3 of the [FreeIPA bootstrap](bootstrap.md#freeipa); jobs run
+regardless while `AccountingStorageEnforce` is unset, so nothing else
+will flag it. This is worth re-running after any change to
 `LaunchParameters` or to compute-node identity: those rows are written
 from the launch credential, so a regression in what the controller sends
 shows up here even when the job itself still completes. Compare rows
 written before and after such a change — they should be identical.
 
+Run it from the login pod specifically. `User` comes from the job's
+association, but `Group` — and `User` too, for a job with no association
+— is resolved by whoever runs `sacct`, so from the controller pod they
+show bare numbers even when the record is fine.
+
 **Controller/dbd lack of SSSD has a narrow, known cost.** The controller
-and `slurmdbd` still have no working SSSD, by design — job submission,
-in-job identity, and accounting records are unaffected. What breaks,
-from a shell inside the controller pod: `sacct -u <user>` and `squeue -u
-<user>` both fail with an invalid-user error (the numeric uid is not a
-workaround — `sacct` validates the id through NSS before filtering), and
-`sacct`'s `Group` column renders numeric instead of a name. Unfiltered
-`sacct` still shows the right username, because it is stored as a string
-in the accounting DB rather than looked up. Run filtered queries from
-the login pod, where SSSD does run, to see resolved names.
+and `slurmdbd` have no working SSSD, by upstream design — job
+submission, in-job identity, associations, accounts and QoS are
+unaffected, because each user's own credential tells slurmctld their uid
+and name. What breaks is anything the controller has to resolve by
+itself: partition `AllowGroups=` denies directory users, reservation
+`Users=` is rejected, and from a shell inside the controller pod `sacct
+-u <user>` and `squeue -u <user>` fail with an invalid-user error (a
+numeric uid is not a workaround). Use Slurm accounts for access control
+(enforced only with `AccountingStorageEnforce=associations`) and run
+filtered queries from the login pod. Details and measurements:
+[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting).
 
 If any of these checks fail, [troubleshooting.md](troubleshooting.md) is
 keyed by symptom (e.g. login pod can't resolve a user, job loses its
@@ -295,6 +308,7 @@ secondary groups, SSH hangs).
 | Identity resolution | `kubectl -n slurm exec <login-pod> -- getent passwd <user>` | User resolves |
 | Login | `ssh -p 32222 <user>@<node-ip>` | Session opens in `/home/<user>` |
 | Job execution | `srun hostname`, then `sbatch job.sh` from `~` + `sacct` | `COMPLETED`, `0:0`; `slurm-<jobid>.out` in `~` |
+| Accounting | `sacct -a -X --format=JobID,User,Account,AssocID` on login | `Account` set, `AssocID` non-zero |
 | Shared `/home` | `srun touch ~/x`, then `ls -ln ~/x` on login | Same file, owned by the user's uid |
 | Group parity | `id -G` vs `srun bash -c 'id -G'` | Same gids on both sides |
 
