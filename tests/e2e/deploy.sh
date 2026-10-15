@@ -162,7 +162,8 @@ slurm_node_idle() {
 retry 300 slurm_node_idle
 
 # FreeIPA makes the user resolvable, but Slurm accounting knows nobody until
-# registered (docs/bootstrap.md, FreeIPA step 3). sacctmgr add exits non-zero
+# registered (docs/bootstrap.md, FreeIPA step 3), and with associations
+# enforced an unregistered user cannot submit. sacctmgr add exits non-zero
 # for an existing object, hence the show guards; retried in case slurmdbd is
 # not yet answering.
 log "registering $E2E_USER in Slurm accounting under account $E2E_ACCOUNT"

@@ -280,11 +280,11 @@ cannot perform either:
 
 3. **Register users in Slurm accounting.** FreeIPA makes a user resolvable;
    it does not make them known to Slurm accounting, and nothing syncs the
-   two. Until a user is registered, their jobs still run (the chart leaves
-   `AccountingStorageEnforce` at `none`) but are recorded with no
-   association and an empty `Account`, and no account- or QoS-based limit
-   applies to them. Register each user under a Slurm account from the
-   login pod, where `root` is a Slurm administrator:
+   two. Until a user is registered, slurmctld refuses their jobs with
+   `Invalid account or account/partition combination specified`: this
+   repo sets `AccountingStorageEnforce=associations`, so a job needs an
+   association. Register each user under a Slurm account from the login
+   pod, where `root` is a Slurm administrator:
 
    ```sh
    kubectl -n slurm exec deploy/slurm-login-slinky -c login -- sh -c '
@@ -302,10 +302,9 @@ cannot perform either:
    Do this instead of relying on Unix groups for access control. The
    controller runs no SSSD, so partition `AllowGroups=` and reservation
    `Users=`/`Groups=` cannot resolve directory users and deny them; partition
-   `AllowAccounts=`/`AllowQos=` and reservation `Accounts=` work. Accounts
-   only keep people out once `AccountingStorageEnforce` includes
-   `associations`, though: while it is unset, any user can name any
-   account with `-A` and be admitted. See
+   `AllowAccounts=`/`AllowQos=` and reservation `Accounts=` work, and
+   because associations are enforced a user cannot get past them by
+   naming someone else's account with `-A`. See
    [runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting).
 
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

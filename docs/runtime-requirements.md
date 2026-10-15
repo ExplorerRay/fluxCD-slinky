@@ -382,10 +382,14 @@ user is registered with `sacctmgr` ([bootstrap.md](bootstrap.md#freeipa),
 step 3). The mapping is learned from the user's own first request: until
 then `scontrol show assoc_mgr users=<user>` lists them with uid
 `4294967294` (unknown), which does not affect their own jobs, because the
-submission itself carries the uid. A user who is *not* registered still
-runs jobs while `AccountingStorageEnforce` is unset (the chart default,
-`none`), but every such job is recorded with `AssocID=0` and an empty
-`Account`.
+submission itself carries the uid — measured with enforcement on, on a
+user's first job straight after a slurmctld restart. This repo sets
+`AccountingStorageEnforce=associations`
+(`applications/slurm/base/values.yaml`), so a user who is *not*
+registered is refused at submission with `Invalid account or
+account/partition combination specified`. Under the chart default
+(`none`) the same user's jobs would run, recorded with `AssocID=0` and an
+empty `Account`.
 
 **What fails is anything where slurmctld must resolve a name or group
 itself**, through its own NSS. Measured on chart 1.2.3 / Slurm 26.05.4
@@ -394,8 +398,8 @@ with a FreeIPA user in a POSIX group:
 | Feature | Without controller SSSD | Use instead |
 | --- | --- | --- |
 | A job's association, account, QoS | works | — |
-| Reservation `Accounts=` | resolves: a job under the account is admitted, one under another account is denied — but only `AccountingStorageEnforce=associations` stops a user naming an account they are not in (below) | — |
-| Partition `AllowAccounts=`/`AllowQos=` | resolves (from Slurm's source, not measured); `AllowAccounts` has the same `-A` caveat as reservation `Accounts=` | — |
+| Reservation `Accounts=` | works: a job under the account is admitted, one under another account is denied, and with `AccountingStorageEnforce=associations` a user cannot claim an account they are not in (below). With enforcement it also admits the account's sub-accounts, so `Accounts=root` admits every registered user | — |
+| Partition `AllowAccounts=`/`AllowQos=` | works (from Slurm's source, not measured); `AllowAccounts` needs `AccountingStorageEnforce=associations`, as reservation `Accounts=` does | — |
 | Partition `AllowGroups=` | denies every directory user, members of the group included, whether given the group name or its numeric gid | `AllowAccounts=` / `AllowQos=` |
 | Reservation `Users=` | rejected at creation (`Reservation request has invalid user`), by name or by numeric uid, even after slurmctld has learned the uid | reservation `Accounts=` |
 | Reservation `Groups=` | same lookup as `AllowGroups` (from source, not measured) | reservation `Accounts=` |
@@ -412,15 +416,25 @@ an `Accounts=` reservation it was not part of, so test access control as
 an ordinary user. `AllowUserBoot` in `helpers.conf` also names users,
 and has not been measured.
 
-**Accounts are only a boundary once enforced.** The account rows above
-work on the account a job names, and with `AccountingStorageEnforce`
-unset Slurm does not check that the user belongs to it. Measured: a
-FreeIPA user with no association at all was refused by an
-`Accounts=root` reservation when submitting plainly, admitted as soon
-as they added `-A root`, and the job was recorded with `Account=root`
-and `AssocID=0`. Until enforcement is on, `Accounts=` and
-`AllowAccounts=` sort cooperative users rather than keep anyone out —
-which is still more than `AllowGroups=` and `Users=` can do here.
+**Accounts are only a boundary once enforced, hence
+`AccountingStorageEnforce=associations`.** The account rows above work
+on the account a job names, and with `AccountingStorageEnforce` unset
+nothing stops a user with no association at all from naming any
+account. Measured without enforcement: such a FreeIPA user was refused
+by an `Accounts=root` reservation when submitting plainly, admitted as
+soon as they added `-A root`, and the job was recorded with
+`Account=root` and `AssocID=0` (a registered user's `-A root` was still
+refused by the reservation). Measured with `associations`: `-A root`, with
+or without the reservation, is refused at submission (`Invalid account
+or account/partition combination specified`), as is any job from an
+unregistered FreeIPA user, while a registered user's own jobs, `srun`
+steps and `Accounts=` reservation run as before. Enforcement also changes
+what a reservation's `Accounts=` matches: without it only the named
+account (an `Accounts=root` reservation refused a `sciteam` member);
+with it the job's whole association chain, so the same reservation
+admitted them, because every account sits under `root`, while one for a
+sibling account still refused them. Reserve for a leaf account, or for a
+parent account on purpose to cover the group under it.
 
 `sacct`'s `User` column comes from the job's association when it has one;
 otherwise the uid is resolved by whoever runs `sacct`, so a job without an
@@ -431,13 +445,10 @@ None of this needs SSSD on the controller if access control is expressed
 as Slurm accounts and QoS rather than Unix groups or user lists. That
 does mean keeping accounting in step with FreeIPA: group membership does
 not flow into Slurm by itself, so a new user needs a `sacctmgr add user`
-alongside the `ipa user-add`. To make accounting authoritative — reject
-unregistered users, refuse `-A` for an account the user is not in (and
-with it enforce reservation `Accounts=` and partition `AllowAccounts`),
-and apply QoS limits — set
-`AccountingStorageEnforce=associations,limits,qos` through
-`controller.extraConfMap`; this repo does not set it yet, so register
-every existing user first.
+alongside the `ipa user-add`, or that user cannot submit at all.
+`associations` is the part of `AccountingStorageEnforce` that makes
+accounts a boundary; to also apply association and QoS limits, extend it
+to `associations,limits,qos` in `controller.extraConfMap`.
 
 ## Shared /home on CephFS
 

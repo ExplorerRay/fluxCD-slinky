@@ -30,6 +30,7 @@ use the index to jump straight to yours.
 | Identity and Slurm | [`srun`: no partitions in the system](#srun-fails-with-unable-to-allocate-resources-no-partition-specified-or-system-default-partition-and-scontrol-show-partition-reports-no-partitions-in-the-system) |
 | Identity and Slurm | [`AllowGroups` member refused a partition](#a-member-of-an-allowgroups-group-is-refused-the-partition-not-in-group-permitted-to-use-this-partition) |
 | Identity and Slurm | [Reservation `users=` fails: `Unspecified error`](#scontrol-create-reservation-usersuser-fails-with-unspecified-error) |
+| Identity and Slurm | [`sbatch`: `Invalid account or account/partition combination`](#sbatch-or-srun-fails-with-invalid-account-or-accountpartition-combination-specified) |
 | Identity and Slurm | [`sacct` shows an empty `Account`](#jobs-complete-but-sacct-shows-an-empty-account) |
 | Generic traps | [A values change appears to do nothing](#a-values-change-appears-to-do-nothing) |
 | Generic traps | [ConfigMap/Secret change not visible in a pod](#a-configmap-or-secret-change-is-not-visible-inside-a-running-pod) |
@@ -350,9 +351,8 @@ kubectl -n slurm exec slurm-controller-0 -c slurmctld -- getent passwd <user>; e
 
 **Fix:** gate the partition on Slurm accounts or QoS instead —
 `AllowAccounts=`/`AllowQos=` in the partition config, users registered
-with `sacctmgr` (bootstrap step 3), and
-`AccountingStorageEnforce=associations` so `AllowAccounts` is actually
-enforced. See
+with `sacctmgr` (bootstrap step 3); `AllowAccounts` holds because this
+repo sets `AccountingStorageEnforce=associations`. See
 [runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting).
 
 ### `scontrol create reservation users=<user>` fails with `Unspecified error`
@@ -367,22 +367,43 @@ uid fails the same way. `Groups=` uses the `AllowGroups` lookup above.
 **Fix:** reserve for a Slurm account instead
 (`scontrol create reservation … accounts=<account>`); users then submit
 with `--reservation=<name> -A <account>`. A job under any other account
-is refused with `Access denied to requested reservation`. That only keeps
-people out once `AccountingStorageEnforce` includes `associations`;
-while it is unset (the chart default), any user who passes
-`-A <account>` is admitted whether or not they belong to it.
+is refused with `Access denied to requested reservation`, and a user who
+names an account they are not in is refused at submission (see the next
+entry) — that part relies on `AccountingStorageEnforce=associations`,
+which this repo sets. With enforcement, `Accounts=` also admits jobs from
+the account's sub-accounts: `accounts=root` lets every registered user
+in, so name the account you mean.
+
+### `sbatch` or `srun` fails with `Invalid account or account/partition combination specified`
+
+**Cause:** with `AccountingStorageEnforce=associations` (set here) a job
+needs an association, and there is none for this user and account:
+either the user was never registered in Slurm accounting, or they named
+an account they are not in with `-A`. A FreeIPA user resolving on the
+login pod says nothing about this; Slurm accounting is separate.
+
+**Check:** from the login pod —
+
+```sh
+sacctmgr -n show assoc user=<user> format=account,user
+```
+
+**Fix:** register the user (bootstrap step 3), e.g.
+`sacctmgr -i add user <user> account=<account>` from the login pod, or
+submit under an account they are in.
 
 ### Jobs complete but `sacct` shows an empty `Account`
 
-**Cause:** the user is not registered in Slurm accounting. With
-`AccountingStorageEnforce` unset (the chart default) their jobs still
-run, but with no association (`AssocID` 0), so no account or QoS limit
-applies and `Account` is empty. The reverse does not hold: an
-unregistered user who submits with `-A <account>` gets that `Account`
-recorded, still with `AssocID` 0, so `AssocID` is the reliable sign.
+**Cause:** the job ran with no association (`AssocID` 0): the user was
+not registered in Slurm accounting and associations were not enforced —
+under the chart default (`AccountingStorageEnforce=none`), or in jobs
+recorded before this repo turned enforcement on. An unregistered user who
+passed `-A <account>` then has that `Account` recorded, still with
+`AssocID` 0, so `AssocID` is the reliable sign.
 
 **Fix:** register the user (bootstrap step 3), e.g.
-`sacctmgr -i add user <user> account=<account>` from the login pod.
+`sacctmgr -i add user <user> account=<account>` from the login pod. With
+enforcement on, new jobs from unregistered users are refused instead.
 
 ## Generic traps
 

@@ -189,8 +189,8 @@ no_identity_on_compute_outside_job() {
 # access cannot resolve directory users (docs/runtime-requirements.md,
 # "Controller identity and Slurm accounting"). If one starts failing,
 # slurmctld has gained NSS for directory users and those docs are stale.
-# A third pins that accounts are not enforced: AccountingStorageEnforce is
-# unset, so a user can name an account they are not in.
+# Accounts are a boundary only because values.yaml sets
+# AccountingStorageEnforce=associations; two checks confirm it holds.
 
 # resv_create <name> <args...>: (re)create a 10-minute reservation on every
 # node; ignore_jobs so running jobs are not in the way.
@@ -203,6 +203,15 @@ resv_create() {
 }
 resv_delete() { on_login scontrol delete reservationname="$1" >/dev/null 2>&1; }
 
+# An account E2E_USER is not in and that is not above E2E_ACCOUNT: with
+# associations enforced, a reservation's Accounts= also admits sub-accounts,
+# and every account sits under root. Created on demand, deleted by cleanup.
+OTHER_ACCOUNT=e2eother
+other_account() {
+  on_login sh -c "sacctmgr -n show account $OTHER_ACCOUNT | grep -q . ||
+    sacctmgr -i add account $OTHER_ACCOUNT >/dev/null"
+}
+
 # Read once, out here: checks run in subshells and cannot hand state back.
 default_part="$(on_login sinfo -h -o '%P' | sed -n 's/\*$//p')"
 orig_allow_groups="$(on_login scontrol show partition "$default_part" -o 2>/dev/null |
@@ -211,7 +220,8 @@ orig_allow_groups="$(on_login scontrol show partition "$default_part" -o 2>/dev/
 # ends; each check also cleans up after itself, so normally this is a no-op.
 cleanup() {
   local r
-  for r in e2e-acct-allow e2e-acct-deny e2e-acct-claim e2e-users; do resv_delete "$r"; done
+  for r in e2e-acct-allow e2e-acct-deny e2e-acct-claim e2e-acct-root e2e-users; do resv_delete "$r"; done
+  on_login sacctmgr -i delete account "$OTHER_ACCOUNT" >/dev/null 2>&1
   if [[ -n "$orig_allow_groups" ]]; then
     on_login scontrol update partitionname="$default_part" "$orig_allow_groups" >/dev/null 2>&1
   fi
@@ -245,9 +255,9 @@ reservation_admits_account() {
   return "$rc"
 }
 reservation_refuses_other_account() {
-  # Every Slurm cluster has the root account; E2E_USER is not in it.
   local out
-  resv_create e2e-acct-deny accounts=root || return 1
+  other_account || return 1
+  resv_create e2e-acct-deny accounts="$OTHER_ACCOUNT" || return 1
   if out="$(as_user 'sbatch --parsable -o /dev/null --reservation=e2e-acct-deny --wrap true' 2>&1)"; then
     echo "submitted job $out, expected a refusal"
     on_login scancel "$out"
@@ -258,20 +268,52 @@ reservation_refuses_other_account() {
   resv_delete e2e-acct-deny
   grep -q "Access denied to requested reservation" <<<"$out"
 }
-account_membership_unenforced() {
-  # The same reservation, but E2E_USER names its account with -A. Held, so it
-  # only has to pass admission; nothing runs.
+account_claim_refused() {
+  # The same reservation, but E2E_USER names its account with -A. Enforcement
+  # refuses this at submission as an invalid account; without it the
+  # reservation refuses it instead (or, for a user with no association at all,
+  # admits it). Held, so a wrong admission runs nothing.
   local out
-  resv_create e2e-acct-claim accounts=root || return 1
-  if ! out="$(as_user 'sbatch --parsable --hold -o /dev/null --reservation=e2e-acct-claim -A root --wrap true' 2>&1)"; then
-    echo "$out"
-    echo "refused: slurmctld now checks account membership (AccountingStorageEnforce=associations?)"
+  other_account || return 1
+  resv_create e2e-acct-claim accounts="$OTHER_ACCOUNT" || return 1
+  if out="$(as_user "sbatch --parsable --hold -o /dev/null --reservation=e2e-acct-claim -A $OTHER_ACCOUNT --wrap true" 2>&1)"; then
+    echo "admitted as job $out: AccountingStorageEnforce no longer includes associations"
+    on_login scancel "$out"
     resv_delete e2e-acct-claim
+    return 1
+  fi
+  echo "$out"
+  resv_delete e2e-acct-claim
+  grep -q "Invalid account" <<<"$out" ||
+    { echo "expected an invalid-account refusal: is AccountingStorageEnforce=associations set?"; return 1; }
+}
+reservation_admits_subaccounts() {
+  # Accounts=root covers every account, so it admits E2E_USER. Without
+  # enforcement only the named account matches and this is refused. Held, so
+  # the admitted job runs nothing.
+  local out
+  resv_create e2e-acct-root accounts=root || return 1
+  if ! out="$(as_user 'sbatch --parsable --hold -o /dev/null --reservation=e2e-acct-root --wrap true' 2>&1)"; then
+    echo "$out"
+    resv_delete e2e-acct-root
     return 1
   fi
   echo "admitted as job $out"
   on_login scancel "$out"
-  resv_delete e2e-acct-claim
+  resv_delete e2e-acct-root
+}
+unregistered_user_refused() {
+  # FreeIPA's own admin user resolves on the login pod but is never
+  # registered in Slurm accounting. Held, so a wrong admission runs nothing.
+  local out
+  on_login getent passwd admin >/dev/null || { echo "FreeIPA user admin does not resolve on login"; return 1; }
+  if out="$(on_login su -s /bin/sh admin -c 'sbatch --parsable --hold -o /dev/null --wrap true' 2>&1)"; then
+    echo "admitted as job $out: AccountingStorageEnforce no longer includes associations (or admin was registered)"
+    on_login scancel "$out"
+    return 1
+  fi
+  echo "$out"
+  grep -q "Invalid account" <<<"$out"
 }
 reservation_users_unresolvable() {
   local out
@@ -326,7 +368,9 @@ check "batch job completes and is accounted to $E2E_USER" batch_job_accounted
 check "a job is recorded under Slurm account $E2E_ACCOUNT" job_recorded_under_account
 check "an Accounts= reservation admits $E2E_ACCOUNT" reservation_admits_account
 check "an Accounts= reservation refuses other accounts" reservation_refuses_other_account
-check "known limit: -A admits $E2E_USER to an account it is not in (unenforced)" account_membership_unenforced
+check "an Accounts=root reservation admits $E2E_USER (sub-accounts count)" reservation_admits_subaccounts
+check "-A cannot claim an account $E2E_USER is not in" account_claim_refused
+check "an unregistered FreeIPA user cannot submit" unregistered_user_refused
 check "known limit: reservation Users= cannot resolve $E2E_USER" reservation_users_unresolvable
 check "known limit: partition AllowGroups denies members of $E2E_GROUP" allow_groups_unresolvable
 check "no identity on compute outside a job (no SSSD there)" no_identity_on_compute_outside_job

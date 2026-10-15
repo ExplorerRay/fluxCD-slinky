@@ -76,8 +76,8 @@ an oversight:
   and QoS. What it cannot do is resolve names or groups the controller has
   to look up itself — partition `AllowGroups=`, reservation
   `Users=`/`Groups=` — so access control here is done with Slurm accounts
-  and QoS instead, which keep users out only once
-  `AccountingStorageEnforce` includes `associations` (it is unset today).
+  and QoS instead, made a real boundary by
+  `AccountingStorageEnforce=associations`.
 - **Compute nodes deliberately do not run SSSD either.**
   `nodesets.<name>.ssh.enabled` is the only gate that gives slurmd an
   `sssdConfRef` — `nodeset-cr.yaml` sets `spec.ssh.sssdConfRef` only inside
@@ -102,7 +102,8 @@ only answers for users of steps currently running on that node.
 
 On the controller side, a FreeIPA user is only known to Slurm accounting
 once registered with `sacctmgr` ([bootstrap.md](bootstrap.md#freeipa),
-step 3); until then their jobs run with no association or account. See
+step 3); until then slurmctld refuses their jobs, since associations are
+enforced. See
 [runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting)
 for what works without SSSD on the controller and what to use instead.
 

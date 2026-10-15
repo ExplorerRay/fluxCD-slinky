@@ -29,15 +29,20 @@ appear in Slurm accounting. The accounting checks also create and delete
 short-lived reservations named `e2e-*` on every node (`ignore_jobs`, so
 running jobs are not disturbed), and for a few seconds restrict the default
 partition's `AllowGroups` to `E2E_GROUP` before restoring it — don't run
-them against a cluster where other people are submitting. Three of them
-are marked "known limit": they pass while partition `AllowGroups=` and
-reservation `Users=` still cannot resolve directory users, and while a
-user can still name an account they are not in with `-A` (no
-`AccountingStorageEnforce=associations`; see
-[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting)).
-A failure there means that limitation went away and the docs need
+them against a cluster where other people are submitting. They also
+create an empty Slurm account, `e2eother`, to reserve for an account
+the user is not in, and delete it again. Two checks confirm
+`AccountingStorageEnforce=associations` holds: a user cannot enter a
+reservation by naming an account they are not in, and an unregistered
+FreeIPA user (`admin`, present in every FreeIPA) cannot submit at all;
+a third pins that an `Accounts=root` reservation admits the user, since
+enforced reservations match sub-accounts. Two are marked "known limit":
+they pass while partition `AllowGroups=` and reservation `Users=` still
+cannot resolve directory users (see
+[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting)),
+and a failure there means that limitation went away and the docs need
 revisiting. If the script is interrupted, it still deletes the `e2e-*`
-reservations and restores `AllowGroups` on the way out.
+reservations and `e2eother`, and restores `AllowGroups`, on the way out.
 
 ## 1. Cluster is up
 
@@ -276,13 +281,12 @@ sacct -a -X --format=JobID,User,UID,Group,GID,Account,State
 ```
 
 `User` and `Group` must both be names rather than numbers, and `Account`
-must be populated. An empty `Account` (with `AssocID` 0 if you add that
-column) means the user was never registered in Slurm accounting — so
-does `AssocID` 0 next to a populated `Account`, which is what a user who
-passed `-A` gets. Either way, do
-step 3 of the [FreeIPA bootstrap](bootstrap.md#freeipa); jobs run
-regardless while `AccountingStorageEnforce` is unset, so nothing else
-will flag it. This is worth re-running after any change to
+must be populated. With associations enforced, an unregistered user
+cannot submit at all, so every new row should have both; an empty
+`Account` or `AssocID` 0 (add that column) marks a job recorded while
+enforcement was off by a user never registered in Slurm accounting —
+do step 3 of the [FreeIPA bootstrap](bootstrap.md#freeipa) for them.
+This is worth re-running after any change to
 `LaunchParameters` or to compute-node identity: those rows are written
 from the launch credential, so a regression in what the controller sends
 shows up here even when the job itself still completes. Compare rows
@@ -302,7 +306,7 @@ itself: partition `AllowGroups=` denies directory users, reservation
 `Users=` is rejected, and from a shell inside the controller pod `sacct
 -u <user>` and `squeue -u <user>` fail with an invalid-user error (a
 numeric uid is not a workaround). Use Slurm accounts for access control
-(enforced only with `AccountingStorageEnforce=associations`) and run
+(enforced by `AccountingStorageEnforce=associations`) and run
 filtered queries from the login pod. Details and measurements:
 [runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting).
 
