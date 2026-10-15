@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Deploy clusters/kind-ci onto a fresh kind-single cluster
-# (bootstrap/kind/setup.sh single), then do the two bootstrap steps Flux
-# cannot (docs/bootstrap.md, FreeIPA): the freeipa-ca ConfigMap and a test
-# user in a POSIX group. Used by .github/workflows/e2e.yaml; followed by
-# tests/e2e/checks.sh.
+# (bootstrap/kind/setup.sh single), then do the bootstrap steps Flux cannot
+# (docs/bootstrap.md, FreeIPA): the freeipa-ca ConfigMap, a test user in a
+# POSIX group, and that user's Slurm account. Used by
+# .github/workflows/e2e.yaml; followed by tests/e2e/checks.sh.
 #
 # Flux clones REPO_URL at REVISION — not this working copy — so the commit
 # must be pushed. Idempotent: safe to re-run against a partly deployed cluster.
@@ -14,6 +14,7 @@
 #   REVISION      commit SHA to deploy       [HEAD]
 #   E2E_USER / E2E_GROUP / E2E_PASSWORD  test identity, shared with checks.sh
 #                 [e2euser / e2eteam / E2e-dev-only-1]
+#   E2E_ACCOUNT   Slurm account the test user is registered under [e2eteam]
 
 set -euo pipefail
 
@@ -24,6 +25,7 @@ REVISION="${REVISION:-$(git -C "$REPO_ROOT" rev-parse HEAD)}"
 E2E_USER="${E2E_USER:-e2euser}"
 E2E_GROUP="${E2E_GROUP:-e2eteam}"
 E2E_PASSWORD="${E2E_PASSWORD:-E2e-dev-only-1}"
+E2E_ACCOUNT="${E2E_ACCOUNT:-e2eteam}"
 
 if [[ "$REPO_BRANCH" == HEAD ]]; then
   echo "ERROR: cannot infer the branch from a detached HEAD; set REPO_BRANCH" >&2
@@ -158,5 +160,22 @@ slurm_node_idle() {
   kubectl -n slurm exec deploy/slurm-login-slinky -c login -- sinfo -h -o '%t' | grep -qx idle
 }
 retry 300 slurm_node_idle
+
+# FreeIPA makes the user resolvable, but Slurm accounting knows nobody until
+# registered (docs/bootstrap.md, FreeIPA step 3). sacctmgr add exits non-zero
+# for an existing object, hence the show guards; retried in case slurmdbd is
+# not yet answering.
+log "registering $E2E_USER in Slurm accounting under account $E2E_ACCOUNT"
+register_user() {
+  kubectl -n slurm exec -i deploy/slurm-login-slinky -c login -- bash -s <<EOF
+set -euo pipefail
+sacctmgr -n show account '${E2E_ACCOUNT}' | grep -q . ||
+  sacctmgr -i add account '${E2E_ACCOUNT}' >/dev/null
+sacctmgr -n show assoc user='${E2E_USER}' account='${E2E_ACCOUNT}' format=user | grep -q . ||
+  sacctmgr -i add user '${E2E_USER}' account='${E2E_ACCOUNT}' >/dev/null
+sacctmgr -n show assoc user='${E2E_USER}' account='${E2E_ACCOUNT}' format=user | grep -q .
+EOF
+}
+retry 120 register_user
 
 log "deploy complete"

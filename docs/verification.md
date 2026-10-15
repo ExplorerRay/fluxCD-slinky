@@ -16,7 +16,8 @@ every pull request that touches manifests. It logs in as a FreeIPA test user
 and `sshpass`, and the user must exist — `tests/e2e/deploy.sh` creates it.
 Against a cluster you deployed by hand, create that user (see
 [bootstrap.md](bootstrap.md#freeipa)) or point `E2E_USER`, `E2E_GROUP` and
-`E2E_PASSWORD` at an existing one, then:
+`E2E_PASSWORD` at an existing one, and register it in Slurm accounting
+under `E2E_ACCOUNT` (default `e2eteam`; bootstrap step 3), then:
 
 ```sh
 bash tests/e2e/checks.sh
@@ -24,7 +25,19 @@ bash tests/e2e/checks.sh
 
 It creates that user's home on first login if needed, writes `from-login`,
 `from-compute` and `slurm-<jobid>.out` into it, and submits short jobs, which
-appear in Slurm accounting.
+appear in Slurm accounting. The accounting checks also create and delete
+short-lived reservations named `e2e-*` on every node (`ignore_jobs`, so
+running jobs are not disturbed), and for a few seconds restrict the default
+partition's `AllowGroups` to `E2E_GROUP` before restoring it — don't run
+them against a cluster where other people are submitting. Three of them
+are marked "known limit": they pass while partition `AllowGroups=` and
+reservation `Users=` still cannot resolve directory users, and while a
+user can still name an account they are not in with `-A` (no
+`AccountingStorageEnforce=associations`; see
+[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting)).
+A failure there means that limitation went away and the docs need
+revisiting. If the script is interrupted, it still deletes the `e2e-*`
+reservations and restores `AllowGroups` on the way out.
 
 ## 1. Cluster is up
 

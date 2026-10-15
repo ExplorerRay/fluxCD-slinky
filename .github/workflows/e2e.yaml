@@ -33,6 +33,7 @@ jobs:
       E2E_USER: e2euser
       E2E_GROUP: e2eteam
       E2E_PASSWORD: E2e-dev-only-1
+      E2E_ACCOUNT: e2eteam
     steps:
       - name: Checkout
         uses: actions/checkout@v6
