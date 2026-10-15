@@ -278,4 +278,33 @@ cannot perform either:
    `sss_cache` binary, see
    [troubleshooting.md](troubleshooting.md#sss_cache-is-not-found-when-trying-to-flush-the-sssd-cache-rocky-login-image).
 
+3. **Register users in Slurm accounting.** FreeIPA makes a user resolvable;
+   it does not make them known to Slurm accounting, and nothing syncs the
+   two. Until a user is registered, slurmctld refuses their jobs with
+   `Invalid account or account/partition combination specified`: this
+   repo sets `AccountingStorageEnforce=associations`, so a job needs an
+   association. Register each user under a Slurm account from the login
+   pod, where `root` is a Slurm administrator:
+
+   ```sh
+   kubectl -n slurm exec deploy/slurm-login-slinky -c login -- sh -c '
+     sacctmgr -n show account sciteam | grep -q . || sacctmgr -i add account sciteam
+     sacctmgr -n show assoc user=slurmuser account=sciteam format=user | grep -q . ||
+       sacctmgr -i add user slurmuser account=sciteam'
+   ```
+
+   `sacctmgr add` exits non-zero when the account or association already
+   exists, hence the `show … | grep -q .` guards. Naming the account after
+   the POSIX group is only a convention: Slurm never links the two, so
+   moving a user between FreeIPA groups needs a matching `sacctmgr`
+   change.
+
+   Do this instead of relying on Unix groups for access control. The
+   controller runs no SSSD, so partition `AllowGroups=` and reservation
+   `Users=`/`Groups=` cannot resolve directory users and deny them; partition
+   `AllowAccounts=`/`AllowQos=` and reservation `Accounts=` work, and
+   because associations are enforced a user cannot get past them by
+   naming someone else's account with `-A`. See
+   [runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting).
+
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

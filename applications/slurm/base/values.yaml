@@ -18,9 +18,20 @@ sssd:
 # absent. It is set anyway, as the documented and portable mechanism, so that
 # identity does not rest solely on an operator-side constant this repo cannot
 # pin. See docs/runtime-requirements.md.
+#
+# AccountingStorageEnforce=associations makes Slurm accounts the access
+# boundary: a job needs an association, so unregistered users are refused at
+# submission and `-A` cannot name an account the user is not in - without it
+# a user with no association runs jobs anyway, and gets into reservation
+# Accounts= or partition AllowAccounts just by naming the account with `-A`.
+# Every user must be registered with sacctmgr first
+# (docs/bootstrap.md, FreeIPA step 3). Measured working for FreeIPA users with
+# no SSSD on the controller, including a user's first job after a slurmctld
+# restart. See docs/runtime-requirements.md.
 controller:
   extraConfMap:
     LaunchParameters: enable_nss_slurm
+    AccountingStorageEnforce: associations
 
 loginsets:
   slinky:
@@ -77,11 +88,12 @@ loginsets:
 #   1. nodeset-cr.yaml injects `sssdConfRef` inside its `if .enabled` block, so
 #      every compute pod receives the FreeIPA bind credential. Job identity has
 #      no need of it - nss_slurm covers that (docs/runtime-requirements.md).
-#   2. On chart 1.2.1 it breaks the install outright. nodesetDefaults carries
-#      `ssh.extraSshdConfig: null`, nodeset-cr.yaml toYaml's the whole ssh dict
-#      into the CR, and the CRD types that field as `string`, so the NodeSet is
-#      rejected with `spec.ssh.extraSshdConfig: Invalid value: "null"` and no
-#      worker pod is ever created. Override extraSshdConfig with a string if
+#   2. On chart 1.2.1 (unchanged in 1.2.3) it breaks the install outright.
+#      nodesetDefaults carries `ssh.extraSshdConfig: null`, nodeset-cr.yaml
+#      toYaml's the whole ssh dict into the CR, and the CRD types that field as
+#      `string`, so the NodeSet is rejected with
+#      `spec.ssh.extraSshdConfig: Invalid value: "null"` and no worker pod is
+#      ever created. Override extraSshdConfig with a string if
 #      the gate really is needed. (loginset-cr.yaml guards the same field with
 #      `with`, which is why login sets are unaffected.)
 nodesets:

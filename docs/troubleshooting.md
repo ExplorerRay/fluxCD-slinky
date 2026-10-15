@@ -28,6 +28,10 @@ use the index to jump straight to yours.
 | Identity and Slurm | [Login Service on the wrong NodePort](#the-login-service-is-on-a-random-nodeport-instead-of-the-configured-one-eg-31357-rather-than-32222) |
 | Identity and Slurm | [Jobs lose supplementary groups](#jobs-run-fine-but-lose-the-users-supplementary-groups--id--g-on-the-login-node-lists-several-gids-inside-a-job-only-the-primary) |
 | Identity and Slurm | [`srun`: no partitions in the system](#srun-fails-with-unable-to-allocate-resources-no-partition-specified-or-system-default-partition-and-scontrol-show-partition-reports-no-partitions-in-the-system) |
+| Identity and Slurm | [`AllowGroups` member refused a partition](#a-member-of-an-allowgroups-group-is-refused-the-partition-not-in-group-permitted-to-use-this-partition) |
+| Identity and Slurm | [Reservation `users=` fails: `Unspecified error`](#scontrol-create-reservation-usersuser-fails-with-unspecified-error) |
+| Identity and Slurm | [`sbatch`: `Invalid account or account/partition combination`](#sbatch-or-srun-fails-with-invalid-account-or-accountpartition-combination-specified) |
+| Identity and Slurm | [`sacct` shows an empty `Account`](#jobs-complete-but-sacct-shows-an-empty-account) |
 | Generic traps | [A values change appears to do nothing](#a-values-change-appears-to-do-nothing) |
 | Generic traps | [ConfigMap/Secret change not visible in a pod](#a-configmap-or-secret-change-is-not-visible-inside-a-running-pod) |
 | Generic traps | [`sss_cache` not found](#sss_cache-is-not-found-when-trying-to-flush-the-sssd-cache-rocky-login-image) |
@@ -325,6 +329,82 @@ values instead, then force Flux to reconcile:
 flux reconcile helmrelease slurm -n slurm --force
 ```
 
+### A member of an `AllowGroups` group is refused the partition: `not in group permitted to use this partition`
+
+The job stays `PENDING` with a reason such as `uid 1245400004 not in group
+permitted to use this partition (all). groups allowed: sciteam`, although
+`id <user>` on the login pod lists that group.
+
+**Cause:** `AllowGroups=` means Unix groups, and slurmctld resolves their
+members only through its own NSS — never from the groups in the user's
+credential. The controller runs no SSSD (by upstream design), so it
+cannot see FreeIPA groups and denies every directory user. Giving the
+numeric gid instead of the name changes nothing; membership is still
+looked up.
+
+**Check:** from the controller pod the user does not resolve —
+
+```sh
+kubectl -n slurm exec slurm-controller-0 -c slurmctld -- getent passwd <user>; echo rc=$?
+#   rc=2
+```
+
+**Fix:** gate the partition on Slurm accounts or QoS instead —
+`AllowAccounts=`/`AllowQos=` in the partition config, users registered
+with `sacctmgr` (bootstrap step 3); `AllowAccounts` holds because this
+repo sets `AccountingStorageEnforce=associations`. See
+[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting).
+
+### `scontrol create reservation users=<user>` fails with `Unspecified error`
+
+The slurmctld log shows `Reservation request has invalid user <user>`.
+
+**Cause:** the same missing NSS on the controller. Reservation `Users=`
+converts each name with `getpwnam` on slurmctld; it does not consult the
+uid slurmctld has already learned from that user's jobs, and a numeric
+uid fails the same way. `Groups=` uses the `AllowGroups` lookup above.
+
+**Fix:** reserve for a Slurm account instead
+(`scontrol create reservation … accounts=<account>`); users then submit
+with `--reservation=<name> -A <account>`. A job under any other account
+is refused with `Access denied to requested reservation`, and a user who
+names an account they are not in is refused at submission (see the next
+entry) — that part relies on `AccountingStorageEnforce=associations`,
+which this repo sets. With enforcement, `Accounts=` also admits jobs from
+the account's sub-accounts: `accounts=root` lets every registered user
+in, so name the account you mean.
+
+### `sbatch` or `srun` fails with `Invalid account or account/partition combination specified`
+
+**Cause:** with `AccountingStorageEnforce=associations` (set here) a job
+needs an association, and there is none for this user and account:
+either the user was never registered in Slurm accounting, or they named
+an account they are not in with `-A`. A FreeIPA user resolving on the
+login pod says nothing about this; Slurm accounting is separate.
+
+**Check:** from the login pod —
+
+```sh
+sacctmgr -n show assoc user=<user> format=account,user
+```
+
+**Fix:** register the user (bootstrap step 3), e.g.
+`sacctmgr -i add user <user> account=<account>` from the login pod, or
+submit under an account they are in.
+
+### Jobs complete but `sacct` shows an empty `Account`
+
+**Cause:** the job ran with no association (`AssocID` 0): the user was
+not registered in Slurm accounting and associations were not enforced —
+under the chart default (`AccountingStorageEnforce=none`), or in jobs
+recorded before this repo turned enforcement on. An unregistered user who
+passed `-A <account>` then has that `Account` recorded, still with
+`AssocID` 0, so `AssocID` is the reliable sign.
+
+**Fix:** register the user (bootstrap step 3), e.g.
+`sacctmgr -i add user <user> account=<account>` from the login pod. With
+enforcement on, new jobs from unregistered users are refused instead.
+
 ## Generic traps
 
 ### A values change appears to do nothing
@@ -400,9 +480,14 @@ kubectl -n rook-ceph delete pod --field-selector status.phase=Failed
 ### `sacct` shows a numeric uid instead of a username
 
 **Cause:** it was run from a pod with no SSSD — e.g. the controller, which
-the chart gives no `sssdConfRef` at all.
+the chart gives no `sssdConfRef` at all — and the job has no association.
+`sacct` takes `User` from the job's association when there is one;
+otherwise, and always for `Group`, the id is resolved by the machine
+running `sacct`.
 
 **Fix:** run `sacct` from the login pod instead, where SSSD can resolve the
-uid.
+uid. If `Account` is empty too, the user is not registered in Slurm
+accounting — see [Jobs complete but `sacct` shows an empty
+`Account`](#jobs-complete-but-sacct-shows-an-empty-account).
 
 <!-- vim: set ft=markdown ff=unix fenc=utf-8 et sw=2 ts=2 sts=2 tw=79: -->

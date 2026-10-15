@@ -16,7 +16,8 @@ every pull request that touches manifests. It logs in as a FreeIPA test user
 and `sshpass`, and the user must exist — `tests/e2e/deploy.sh` creates it.
 Against a cluster you deployed by hand, create that user (see
 [bootstrap.md](bootstrap.md#freeipa)) or point `E2E_USER`, `E2E_GROUP` and
-`E2E_PASSWORD` at an existing one, then:
+`E2E_PASSWORD` at an existing one, and register it in Slurm accounting
+under `E2E_ACCOUNT` (default `e2eteam`; bootstrap step 3), then:
 
 ```sh
 bash tests/e2e/checks.sh
@@ -24,7 +25,24 @@ bash tests/e2e/checks.sh
 
 It creates that user's home on first login if needed, writes `from-login`,
 `from-compute` and `slurm-<jobid>.out` into it, and submits short jobs, which
-appear in Slurm accounting.
+appear in Slurm accounting. The accounting checks also create and delete
+short-lived reservations named `e2e-*` on every node (`ignore_jobs`, so
+running jobs are not disturbed), and for a few seconds restrict the default
+partition's `AllowGroups` to `E2E_GROUP` before restoring it — don't run
+them against a cluster where other people are submitting. They also
+create an empty Slurm account, `e2eother`, to reserve for an account
+the user is not in, and delete it again. Two checks confirm
+`AccountingStorageEnforce=associations` holds: a user cannot enter a
+reservation by naming an account they are not in, and an unregistered
+FreeIPA user (`admin`, present in every FreeIPA) cannot submit at all;
+a third pins that an `Accounts=root` reservation admits the user, since
+enforced reservations match sub-accounts. Two are marked "known limit":
+they pass while partition `AllowGroups=` and reservation `Users=` still
+cannot resolve directory users (see
+[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting)),
+and a failure there means that limitation went away and the docs need
+revisiting. If the script is interrupted, it still deletes the `e2e-*`
+reservations and `e2eother`, and restores `AllowGroups`, on the way out.
 
 ## 1. Cluster is up
 
@@ -263,22 +281,34 @@ sacct -a -X --format=JobID,User,UID,Group,GID,Account,State
 ```
 
 `User` and `Group` must both be names rather than numbers, and `Account`
-must be populated. This is worth re-running after any change to
+must be populated. With associations enforced, an unregistered user
+cannot submit at all, so every new row should have both; an empty
+`Account` or `AssocID` 0 (add that column) marks a job recorded while
+enforcement was off by a user never registered in Slurm accounting —
+do step 3 of the [FreeIPA bootstrap](bootstrap.md#freeipa) for them.
+This is worth re-running after any change to
 `LaunchParameters` or to compute-node identity: those rows are written
 from the launch credential, so a regression in what the controller sends
 shows up here even when the job itself still completes. Compare rows
 written before and after such a change — they should be identical.
 
+Run it from the login pod specifically. `User` comes from the job's
+association, but `Group` — and `User` too, for a job with no association
+— is resolved by whoever runs `sacct`, so from the controller pod they
+show bare numbers even when the record is fine.
+
 **Controller/dbd lack of SSSD has a narrow, known cost.** The controller
-and `slurmdbd` still have no working SSSD, by design — job submission,
-in-job identity, and accounting records are unaffected. What breaks,
-from a shell inside the controller pod: `sacct -u <user>` and `squeue -u
-<user>` both fail with an invalid-user error (the numeric uid is not a
-workaround — `sacct` validates the id through NSS before filtering), and
-`sacct`'s `Group` column renders numeric instead of a name. Unfiltered
-`sacct` still shows the right username, because it is stored as a string
-in the accounting DB rather than looked up. Run filtered queries from
-the login pod, where SSSD does run, to see resolved names.
+and `slurmdbd` have no working SSSD, by upstream design — job
+submission, in-job identity, associations, accounts and QoS are
+unaffected, because each user's own credential tells slurmctld their uid
+and name. What breaks is anything the controller has to resolve by
+itself: partition `AllowGroups=` denies directory users, reservation
+`Users=` is rejected, and from a shell inside the controller pod `sacct
+-u <user>` and `squeue -u <user>` fail with an invalid-user error (a
+numeric uid is not a workaround). Use Slurm accounts for access control
+(enforced by `AccountingStorageEnforce=associations`) and run
+filtered queries from the login pod. Details and measurements:
+[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting).
 
 If any of these checks fail, [troubleshooting.md](troubleshooting.md) is
 keyed by symptom (e.g. login pod can't resolve a user, job loses its
@@ -295,6 +325,7 @@ secondary groups, SSH hangs).
 | Identity resolution | `kubectl -n slurm exec <login-pod> -- getent passwd <user>` | User resolves |
 | Login | `ssh -p 32222 <user>@<node-ip>` | Session opens in `/home/<user>` |
 | Job execution | `srun hostname`, then `sbatch job.sh` from `~` + `sacct` | `COMPLETED`, `0:0`; `slurm-<jobid>.out` in `~` |
+| Accounting | `sacct -a -X --format=JobID,User,Account,AssocID` on login | `Account` set, `AssocID` non-zero |
 | Shared `/home` | `srun touch ~/x`, then `ls -ln ~/x` on login | Same file, owned by the user's uid |
 | Group parity | `id -G` vs `srun bash -c 'id -G'` | Same gids on both sides |
 

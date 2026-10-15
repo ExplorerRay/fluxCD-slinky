@@ -9,8 +9,10 @@ material behind those requirements: the two ways to grant systemd the
 cgroup access it needs, the platform-specific accommodations already
 implemented for kind and kubeadm, the hardening options that look
 reasonable but break the deployment, how Slurm's compute nodes
-resolve identity via `nss_slurm` even though they run no SSSD, and the
-traps around the CephFS `/home` they share with the login nodes.
+resolve identity via `nss_slurm` even though they run no SSSD, what the
+controller can and cannot do without SSSD (and why access control here
+belongs in Slurm accounts), and the traps around the CephFS `/home`
+they share with the login nodes.
 
 ## systemd in a container needs a writable cgroup
 
@@ -262,8 +264,9 @@ RuntimeClass treatment as kubeadm.
 
 ## Compute nodes and nss_slurm
 
-Only the login pods get SSSD. The controller cannot have it at all (the
-chart exposes no `sssdConfRef` on the Controller CR), and compute nodes
+Only the login pods get SSSD. The controller does not run it either, by
+upstream design rather than omission — see [Controller identity and Slurm
+accounting](#controller-identity-and-slurm-accounting) — and compute nodes
 deliberately do not: `nodesets.<name>.ssh.enabled` is the only gate that
 gives slurmd an `sssdConfRef` (`nodeset-cr.yaml` sets
 `spec.ssh.sssdConfRef` only inside its `if $nodeset.ssh.enabled` block,
@@ -304,27 +307,19 @@ can be populated "on information from client systems if
 lookup — which is exactly this topology, with real user information only
 on the login nodes.
 
-Nothing in this repo sets it, and neither does chart 1.2.1: the
-slurm-operator hardcodes it alongside `AuthType=auth/slurm` in
-`internal/builder/common/const.go`. It is a property of the operator
-rather than of anything version-controlled here, so it is worth
-re-checking after an operator upgrade:
+Nothing in this repo sets it, and neither does the chart (checked on
+1.2.1 and 1.2.3): the slurm-operator hardcodes it alongside
+`AuthType=auth/slurm` in `internal/builder/common/const.go`. It is a
+property of the operator rather than of anything version-controlled
+here, so it is worth re-checking after an operator upgrade:
 
 ```sh
 scontrol show config | grep AuthInfo
 ```
 
-That lack of controller SSSD is not free. From a shell inside the
-controller pod: `sacct -u <user>` and `squeue -u <user>` both fail with
-an invalid-user error (the numeric uid is not a workaround — `sacct`
-validates the id through NSS before filtering), and `sacct`'s `Group`
-column renders numeric instead of a name. Unfiltered `sacct` still shows
-the right username, because it is stored as a string in the accounting
-DB rather than looked up. Job submission, in-job identity, and
-accounting records themselves are all unaffected. `AllowGroups=` on a
-partition, `Users=` on a reservation, and `AllowUserBoot` in
-`helpers.conf` would all need real NSS on the controller to work; none
-of them are used today.
+The same option is what lets slurmctld and slurmdbd work without SSSD at
+all; what that does and does not cover is in [Controller identity and
+Slurm accounting](#controller-identity-and-slurm-accounting).
 
 `LaunchParameters=send_gids` is not an option in 26.05 — the only
 occurrence of that string in Slurm's documentation is inside the
@@ -353,6 +348,107 @@ nss_slurm resolves it the same way a batch job does. What SSSD on
 compute would still be needed for is `ssh`-to-compute via
 `pam_slurm_adopt` (the `nodesets.<name>.ssh.enabled` gate above), which
 is a distinct feature from job identity.
+
+## Controller identity and Slurm accounting
+
+Neither slurmctld nor slurmdbd runs SSSD, and that is upstream's design
+rather than a gap in this repo. The slurm-operator architecture doc
+(`docs/concepts/architecture.md`, `use_client_ids`) describes a cluster
+"where only login nodes have access to LDAP or OS user data", and in July
+2026 the maintainers declined to add SSSD to the controller
+(SlinkyProject/slurm-operator#93, #129) to keep the operator agnostic to
+the identity provider; their suggested route for a site that needs it is
+a custom `slurmctld` image with SSSD set up in it and its configuration
+mounted through the controller's `podSpec`, which this repo does not do.
+Chart 1.2.3's top-level `sssd:` block — "Cluster
+SSSD configuration" — is one shared `sssd.conf`, consumed only by
+`loginset-cr.yaml` and by `nodeset-cr.yaml` under `ssh.enabled`; nothing
+renders it into the Controller, Accounting or RestApi CRs, none of which
+has an `sssdConfRef` field.
+
+The `slurmctld` image does ship SSSD and a supervisord `[program:sssd]`,
+but the operator mounts no `sssd.conf` and runs the pod as non-root uid
+401, which SSSD cannot start under. On every controller start that
+program exits a few times with `No /etc/sssd/sssd.conf` and supervisord
+marks it `FATAL`. That log noise is expected, not a fault — slurmctld is
+unaffected.
+
+**How the controller knows users anyway.** Every `auth/slurm` credential
+carries the caller's uid and username (`AuthInfo=use_client_ids`), and
+slurmctld and slurmdbd copy that pair into their accounting user table
+(`assoc_mgr_set_uid` in Slurm's `auth/slurm` plugin). So everything
+keyed by Slurm *accounting* works for a directory user, provided the
+user is registered with `sacctmgr` ([bootstrap.md](bootstrap.md#freeipa),
+step 3). The mapping is learned from the user's own first request: until
+then `scontrol show assoc_mgr users=<user>` lists them with uid
+`4294967294` (unknown), which does not affect their own jobs, because the
+submission itself carries the uid — measured with enforcement on, on a
+user's first job straight after a slurmctld restart. This repo sets
+`AccountingStorageEnforce=associations`
+(`applications/slurm/base/values.yaml`), so a user who is *not*
+registered is refused at submission with `Invalid account or
+account/partition combination specified`. Under the chart default
+(`none`) the same user's jobs would run, recorded with `AssocID=0` and an
+empty `Account`.
+
+**What fails is anything where slurmctld must resolve a name or group
+itself**, through its own NSS. Measured on chart 1.2.3 / Slurm 26.05.4
+with a FreeIPA user in a POSIX group:
+
+| Feature | Without controller SSSD | Use instead |
+| --- | --- | --- |
+| A job's association, account, QoS | works | — |
+| Reservation `Accounts=` | works: a job under the account is admitted, one under another account is denied, and with `AccountingStorageEnforce=associations` a user cannot claim an account they are not in (below). With enforcement it also admits the account's sub-accounts, so `Accounts=root` admits every registered user | — |
+| Partition `AllowAccounts=`/`AllowQos=` | works (from Slurm's source, not measured); `AllowAccounts` needs `AccountingStorageEnforce=associations`, as reservation `Accounts=` does | — |
+| Partition `AllowGroups=` | denies every directory user, members of the group included, whether given the group name or its numeric gid | `AllowAccounts=` / `AllowQos=` |
+| Reservation `Users=` | rejected at creation (`Reservation request has invalid user`), by name or by numeric uid, even after slurmctld has learned the uid | reservation `Accounts=` |
+| Reservation `Groups=` | same lookup as `AllowGroups` (from source, not measured) | reservation `Accounts=` |
+| `sacct -u`, `squeue -u` in the controller pod | `Invalid user`, by name or by numeric uid | run them from the login pod |
+
+`AllowGroups=` means Unix (POSIX) groups as `id` shows them, not Slurm
+accounts; the two are only linked if a site names accounts after groups.
+Slurm's group check (`validate_group()`, `get_groups_members()`) reads
+only the controller's NSS and never the groups carried in the user's
+credential. Reservation `Users=` likewise converts names with
+`getpwnam` rather than consulting the accounting table. Root and
+`SlurmUser` pass `AllowGroups` unconditionally, and root was admitted to
+an `Accounts=` reservation it was not part of, so test access control as
+an ordinary user. `AllowUserBoot` in `helpers.conf` also names users,
+and has not been measured.
+
+**Accounts are only a boundary once enforced, hence
+`AccountingStorageEnforce=associations`.** The account rows above work
+on the account a job names, and with `AccountingStorageEnforce` unset
+nothing stops a user with no association at all from naming any
+account. Measured without enforcement: such a FreeIPA user was refused
+by an `Accounts=root` reservation when submitting plainly, admitted as
+soon as they added `-A root`, and the job was recorded with
+`Account=root` and `AssocID=0` (a registered user's `-A root` was still
+refused by the reservation). Measured with `associations`: `-A root`, with
+or without the reservation, is refused at submission (`Invalid account
+or account/partition combination specified`), as is any job from an
+unregistered FreeIPA user, while a registered user's own jobs, `srun`
+steps and `Accounts=` reservation run as before. Enforcement also changes
+what a reservation's `Accounts=` matches: without it only the named
+account (an `Accounts=root` reservation refused a `sciteam` member);
+with it the job's whole association chain, so the same reservation
+admitted them, because every account sits under `root`, while one for a
+sibling account still refused them. Reserve for a leaf account, or for a
+parent account on purpose to cover the group under it.
+
+`sacct`'s `User` column comes from the job's association when it has one;
+otherwise the uid is resolved by whoever runs `sacct`, so a job without an
+association shows a bare uid from the controller pod and the name from
+the login pod. `Group` is always resolved by the reader.
+
+None of this needs SSSD on the controller if access control is expressed
+as Slurm accounts and QoS rather than Unix groups or user lists. That
+does mean keeping accounting in step with FreeIPA: group membership does
+not flow into Slurm by itself, so a new user needs a `sacctmgr add user`
+alongside the `ipa user-add`, or that user cannot submit at all.
+`associations` is the part of `AccountingStorageEnforce` that makes
+accounts a boundary; to also apply association and QoS limits, extend it
+to `associations,limits,qos` in `controller.extraConfMap`.
 
 ## Shared /home on CephFS
 
@@ -436,6 +532,6 @@ ceph-filesystem <subvolume> csi` from the toolbox.
   steps this document's requirements support.
 - [Verifying identity end to end](verification.md) — confirm SSSD, LDAPS,
   and `nss_slurm` resolution actually work after deploying against these
-  requirements.
+  requirements, and that jobs are recorded under a Slurm account.
 - [Shared `/home` checks](verification.md#5-a-user-can-log-in-and-run-a-job)
   — confirm the CephFS `/home` is shared, private per user, and persistent.

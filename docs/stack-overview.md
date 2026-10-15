@@ -63,10 +63,21 @@ an oversight:
 
 - **Only login pods run SSSD.** `loginset-cr.yaml` sets `spec.sssdConfRef`
   unconditionally, so every login pod resolves identities against FreeIPA.
-- **The controller cannot run SSSD at all.** The Controller CR's schema
-  exposes no `sssdConfRef` field, and `/etc/sssd/sssd.conf` is absent from
-  slurmctld. It does not need it: job submission carries the uid, and
-  scheduling decisions never require resolving a name.
+- **The controller and slurmdbd do not run SSSD, by upstream design.**
+  Slinky assumes only login nodes talk to the directory, and its
+  maintainers declined to add SSSD to the controller to stay
+  identity-provider agnostic. The Controller and Accounting CRs have no
+  `sssdConfRef` field, the chart's "cluster" `sssd:` block feeds only
+  login (and ssh-enabled compute) pods, and the operator runs slurmctld as
+  non-root uid 401 — so the `sssd` program the `slurmctld` image ships
+  exits at startup and stays `FATAL`. Core Slurm does not need it:
+  `AuthInfo=use_client_ids` puts each user's uid and name in their own
+  credential, which is enough for job submission, associations, accounts
+  and QoS. What it cannot do is resolve names or groups the controller has
+  to look up itself — partition `AllowGroups=`, reservation
+  `Users=`/`Groups=` — so access control here is done with Slurm accounts
+  and QoS instead, made a real boundary by
+  `AccountingStorageEnforce=associations`.
 - **Compute nodes deliberately do not run SSSD either.**
   `nodesets.<name>.ssh.enabled` is the only gate that gives slurmd an
   `sssdConfRef` — `nodeset-cr.yaml` sets `spec.ssh.sssdConfRef` only inside
@@ -88,6 +99,13 @@ The consequence: inside a job, `id -un`, `whoami`, and `getent passwd
 <user>` all resolve fully. The scoping is tight, though: the same lookup
 run in the `slurmd` container outside a job step fails, since nss_slurm
 only answers for users of steps currently running on that node.
+
+On the controller side, a FreeIPA user is only known to Slurm accounting
+once registered with `sacctmgr` ([bootstrap.md](bootstrap.md#freeipa),
+step 3); until then slurmctld refuses their jobs, since associations are
+enforced. See
+[runtime-requirements.md](runtime-requirements.md#controller-identity-and-slurm-accounting)
+for what works without SSSD on the controller and what to use instead.
 
 ## Storage upgrade path (dev -> prod)
 
