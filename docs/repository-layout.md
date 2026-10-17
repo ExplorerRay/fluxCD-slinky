@@ -23,8 +23,8 @@ applications/slurm/
     kubeadm/
 ```
 
-Flux cluster entrypoints should point to overlays, not directly to base
-directories. For example:
+When a component has overlays, Flux cluster entrypoints should point to them,
+not directly to its base directory. For example:
 
 ```yaml
 path: ./applications/slurm/overlays/kind
@@ -36,6 +36,10 @@ Use this rule:
   Helm `values.yaml`.
 - Put only real platform differences in `overlays/kind` or
   `overlays/kubeadm`. An overlay with none just includes `../../base`.
+- A new component with no platform differences at all gets no overlays: it
+  has only `base`, and every cluster entrypoint points at it directly
+  (`applications/freeipa-ca` does this). Add overlays once a real difference
+  appears.
 
 This keeps common behavior in one place while allowing one cluster to add
 resources that the other cluster does not need. `overlays/kind` and

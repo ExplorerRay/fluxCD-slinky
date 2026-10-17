@@ -11,6 +11,7 @@ stack, managed by FluxCD.
 | cert-manager | `cert-manager` | TLS certificate management; required by the Slurm operator |
 | rook-ceph | `rook-ceph` | Rook-managed single-node Ceph providing the `ceph-block` default StorageClass and the `ceph-filesystem` (CephFS) StorageClass behind the shared Slurm `/home` |
 | freeipa | `freeipa` | In-cluster FreeIPA identity server; Slurm authenticates via SSSD/LDAPS |
+| freeipa-ca | `slurm` | Job that copies the FreeIPA CA into the `freeipa-ca` ConfigMap SSSD validates LDAPS with; declares the `slurm` Namespace, as `slurm-database` does |
 | mariadb-operator | `mariadb` | Kubernetes operator that manages MariaDB instances via CRDs |
 | slurm-database | `slurm` | MariaDB instance storing Slurm accounting data (`slurm_acct_db`) |
 | slurm-operator | `slinky` | SlinkyProject operator that reconciles Slurm cluster CRDs |
@@ -26,7 +27,8 @@ flux-cluster-repositories
   │    └─ slurm-operator ───────┼─ slurm
   └─ rook-ceph ─────────────────┤
        ├─ slurm-database         │
-       └─ freeipa ───────────────┘
+       └─ freeipa                │
+            └─ freeipa-ca ───────┘
 ```
 
 `rook-ceph` reconciles directly off `flux-cluster-repositories` (in parallel
@@ -34,9 +36,11 @@ with `cert-manager`) and provides the default `ceph-block` StorageClass plus
 the `ceph-filesystem` (CephFS) StorageClass.
 `slurm-database` depends on both `mariadb-operator` and `rook-ceph` because its
 PVC requires the default StorageClass. `freeipa` depends on `rook-ceph` (its
-`/data` PVC uses `ceph-block`), and `slurm` in turn depends on `freeipa` so the
-FreeIPA server exists before login/compute pods try to authenticate against it
-over LDAPS. `slurm` also depends on `rook-ceph` directly, not just through
+`/data` PVC uses `ceph-block`). `freeipa-ca` depends on `freeipa` and waits
+for its Job to copy the FreeIPA CA into the `slurm` namespace, and `slurm` in
+turn depends on `freeipa-ca`, so both the FreeIPA server and the CA SSSD
+validates it with exist before login/compute pods try to authenticate against
+it over LDAPS. `slurm` also depends on `rook-ceph` directly, not just through
 `slurm-database`: its `slurm-home` PVC — the `/home` shared by login and compute
 pods — uses `ceph-filesystem`. Flux's `wait` covers the HelmRelease, not
 CephFS readiness, so on a fresh install the PVC may sit `Pending` until the

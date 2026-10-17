@@ -46,7 +46,9 @@ a single-node and a multi-node variant:
   one exception is `rook-ceph`, which has per-variant overlays
   (`overlays/kind-single`, `overlays/kind-multi`, `overlays/kubeadm-single`,
   `overlays/kubeadm-multi`) layered on top of the shared overlay to bake in
-  the deterministic OSD node hostname for each variant.
+  the deterministic OSD node hostname for each variant. A component with no
+  platform differences (`applications/freeipa-ca`) has only `base`, which
+  the cluster entrypoints reference directly.
 
 See:
 

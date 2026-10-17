@@ -209,18 +209,23 @@ to force the roll.
 
 ## Identity and Slurm
 
-### Everything is green (9/9 Kustomizations, 7/7 HelmReleases, `sinfo` healthy) but no IPA user can log in; `getent passwd <user>` on the login pod returns nothing
+### Everything is green (10/10 Kustomizations, 7/7 HelmReleases, `sinfo` healthy) but no IPA user can log in; `getent passwd <user>` on the login pod returns nothing
 
 **Cause:** SSSD has no CA to validate LDAPS against
-(`ldap_tls_reqcert = demand`, `ldap_tls_cacert = /etc/ipa/ca.crt`) — either
-the `freeipa-ca` ConfigMap was never created, or the values that were meant
-to mount it used keys the chart ignores (see the `loginsetDefaults` trap
-below), so the volume never reached the rendered CR.
+(`ldap_tls_reqcert = demand`, `ldap_tls_cacert = /etc/ipa/ca.crt`), or a
+stale one — either the `freeipa-ca` ConfigMap is missing or predates a
+FreeIPA reinstall (a wiped `/data` PVC means a new CA), or the values that
+were meant to mount it used keys the chart ignores (see the
+`loginsetDefaults` trap below), so the volume never reached the rendered CR.
 
 **Check:**
 
 ```sh
 kubectl -n slurm get configmap freeipa-ca
+
+# the login pod's copy must match the server's
+diff <(kubectl -n slurm exec <login-pod> -- cat /etc/ipa/ca.crt) \
+  <(kubectl -n freeipa exec ipa-0 -- cat /etc/ipa/ca.crt)
 
 # the rendered CR is the authoritative place to look, not the values file
 kubectl -n slurm get loginset <name> -o jsonpath='{.spec.template.spec.volumes}'
@@ -229,17 +234,42 @@ kubectl -n slurm get loginset <name> -o jsonpath='{.spec.login.volumeMounts}'
 kubectl -n slurm exec <login-pod> -- ls -l /etc/ipa/ca.crt
 ```
 
-**Fix:** create the ConfigMap (see [bootstrap.md](bootstrap.md)):
+**Fix:** re-run the export Job, then restart the login pods — the CA is a
+`subPath` mount, which never picks up ConfigMap changes:
 
 ```sh
-kubectl -n freeipa exec sts/ipa -- cat /etc/ipa/ca.crt \
-  | kubectl -n slurm create configmap freeipa-ca --from-file=ca.crt=/dev/stdin
+kubectl -n slurm delete job freeipa-ca-export
+flux reconcile kustomization freeipa-ca
+kubectl -n slurm delete pod -l app.kubernetes.io/component=login
 ```
 
-and set volumes/mounts under `loginsets.<name>.podSpec.volumes` and
+If the mount itself is missing, set volumes/mounts under
+`loginsets.<name>.podSpec.volumes` and
 `loginsets.<name>.login.volumeMounts` in `applications/slurm/base/values.yaml`
 — **not** under a top-level `loginsetDefaults`, which does not exist in the
 chart's templates and is silently ignored.
+
+### The `freeipa-ca` Kustomization fails and `slurm` never reconciles; the `freeipa-ca-export` Job shows `Failed`
+
+**Cause:** the Job could not fetch the CA from
+`http://ipa.freeipa.svc.cluster.local/ipa/config/ca.crt` (FreeIPA's httpd not
+answering) within its deadline, or could not write the ConfigMap. A failed Job
+stays failed: its spec has not changed, so Flux will not recreate it.
+
+**Check:**
+
+```sh
+kubectl -n slurm logs job/freeipa-ca-export -c fetch
+kubectl -n slurm logs job/freeipa-ca-export -c apply
+kubectl -n freeipa exec ipa-0 -- ipactl status
+```
+
+**Fix:** once FreeIPA is healthy, delete the Job and let Flux recreate it:
+
+```sh
+kubectl -n slurm delete job freeipa-ca-export
+flux reconcile kustomization freeipa-ca
+```
 
 ### The login Service is on a random NodePort instead of the configured one (e.g. 31357 rather than 32222)
 

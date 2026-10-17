@@ -187,19 +187,25 @@ accommodations (kind and kubeadm), the privileged-vs-user-namespace choice
 and its kernel-version floor, and the hardening options that look reasonable
 but break the deployment.
 
-Once FreeIPA and Slurm are otherwise up, two manual steps remain — Flux
-cannot perform either:
+Once FreeIPA and Slurm are otherwise up, identity setup has three steps. Flux
+does the first; the other two are manual:
 
-1. **Extract the FreeIPA CA into the slurm namespace.** Once FreeIPA is healthy
-   (`kubectl -n freeipa exec sts/ipa -- ipactl status`; the first install takes
-   several minutes), copy its CA into the `freeipa-ca` ConfigMap. SSSD validates
-   the LDAPS certificate against this CA (`ldap_tls_reqcert = demand`), and the
-   ConfigMap is not a git manifest, so it must be created by hand. It MUST exist
-   before the slurm pods start, or the CA volume mount leaves them Pending:
+1. **The FreeIPA CA reaches the slurm namespace — automatic.** SSSD validates
+   the LDAPS certificate against FreeIPA's CA (`ldap_tls_reqcert = demand`),
+   which the login pods mount from the `slurm/freeipa-ca` ConfigMap. The CA is
+   generated at install time and cannot live in git, so the `freeipa-ca`
+   Kustomization (`applications/freeipa-ca/`) runs a Job once FreeIPA is
+   Ready: it fetches the CA from FreeIPA's unauthenticated
+   `http://…/ipa/config/ca.crt` endpoint and writes the ConfigMap. `slurm`
+   depends on `freeipa-ca`, so the ConfigMap exists before any Slurm pod
+   starts. Nothing to do unless FreeIPA is reinstalled (a wiped `/data` PVC
+   means a new CA): the Job runs once, so re-run it and restart the login
+   pods:
 
    ```sh
-   kubectl -n freeipa exec sts/ipa -- cat /etc/ipa/ca.crt \
-     | kubectl -n slurm create configmap freeipa-ca --from-file=ca.crt=/dev/stdin
+   kubectl -n slurm delete job freeipa-ca-export
+   flux reconcile kustomization freeipa-ca
+   kubectl -n slurm delete pod -l app.kubernetes.io/component=login
    ```
 
 2. **Create users and groups.** FreeIPA starts empty, so Slurm cannot
