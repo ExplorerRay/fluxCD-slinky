@@ -1,0 +1,86 @@
+---
+# Copies the FreeIPA CA into slurm/freeipa-ca for SSSD's LDAPS validation.
+# FreeIPA serves it unauthenticated over HTTP, so no freeipa access is needed.
+# Runs once; to re-run after a FreeIPA reinstall see docs/troubleshooting.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: freeipa-ca-export
+  namespace: slurm
+  annotations:
+    # Job templates are immutable; recreate the Job when this file changes.
+    kustomize.toolkit.fluxcd.io/force: enabled
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 540  # under the Kustomization's 10m timeout
+  # No ttlSecondsAfterFinished: Flux would recreate and re-run the Job.
+  template:
+    spec:
+      serviceAccountName: freeipa-ca-export
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Fetch the CA and wrap it in a ConfigMap manifest.
+        - name: fetch
+          image: docker.io/library/alpine:3.24.2  # pinned: :latest means imagePullPolicy Always
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              url=http://ipa.freeipa.svc.cluster.local/ipa/config/ca.crt
+              until wget -q -T 10 -O /work/ca.crt "$url"; do
+                echo "waiting for $url"
+                sleep 10
+              done
+              grep -q -- '-----BEGIN CERTIFICATE-----' /work/ca.crt
+              grep -q -- '-----END CERTIFICATE-----' /work/ca.crt
+              {
+                printf '%s\n' \
+                  'apiVersion: v1' \
+                  'kind: ConfigMap' \
+                  'metadata:' \
+                  '  name: freeipa-ca' \
+                  '  namespace: slurm' \
+                  'data:' \
+                  '  ca.crt: |'
+                sed 's/^/    /' /work/ca.crt
+              } >/work/freeipa-ca.yaml
+              grep -c 'BEGIN CERTIFICATE' /work/ca.crt | sed 's/$/ certificate(s) fetched/'
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      containers:
+        # --force-conflicts takes over a ConfigMap first created by hand.
+        - name: apply
+          image: registry.k8s.io/kubectl:v1.36.3  # entrypoint is kubectl; no shell
+          args:
+            - apply
+            - --server-side
+            - --field-manager=freeipa-ca-export
+            - --force-conflicts
+            - --filename=/work/freeipa-ca.yaml
+          env:
+            - name: HOME  # kubectl cache; the root filesystem is read-only
+              value: /work
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir: {}

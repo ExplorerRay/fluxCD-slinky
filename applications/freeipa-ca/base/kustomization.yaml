@@ -1,0 +1,9 @@
+---
+# No overlays: nothing differs between kind and kubeadm.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: slurm
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - job.yaml

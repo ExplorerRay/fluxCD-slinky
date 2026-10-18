@@ -105,6 +105,14 @@ ipa_running() {
   echo "$status"
   ! grep -q STOPPED <<<"$status"
 }
+# The CA the login pod mounts is FreeIPA's.
+login_has_ipa_ca() {
+  local ipa_ca login_ca
+  ipa_ca="$(kubectl -n freeipa exec ipa-0 -- cat /etc/ipa/ca.crt)" || return 1
+  login_ca="$(on_login cat /etc/ipa/ca.crt)" || return 1
+  [[ "$ipa_ca" == *"BEGIN CERTIFICATE"* && "$login_ca" == "$ipa_ca" ]] ||
+    { echo "login /etc/ipa/ca.crt differs from ipa-0's"; return 1; }
+}
 
 # --- 5. Slurm, identity and /home ---------------------------------------------
 node_idle() {
@@ -356,6 +364,7 @@ check "ceph health is not HEALTH_ERR" ceph_not_error
 check "every PVC Bound" pvcs_bound
 check "slurm-home is ReadWriteMany on ceph-filesystem" home_pvc_rwx_cephfs
 check "FreeIPA services RUNNING" ipa_running
+check "login pod mounts the FreeIPA CA" login_has_ipa_ca
 check "a Slurm node is idle" node_idle
 check "login pod resolves $E2E_USER (SSSD)" login_resolves_user
 check "groups match on login and in a job, incl. $E2E_GROUP" group_parity

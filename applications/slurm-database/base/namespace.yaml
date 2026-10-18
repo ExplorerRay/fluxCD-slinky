@@ -1,5 +1,10 @@
 ---
+# Also declared by applications/freeipa-ca; keep both identical, or the last
+# apply strips the other's fields (same Flux field manager).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: slurm
+  annotations:
+    # Pruning the namespace would delete the slurm-home PVC with it.
+    kustomize.toolkit.fluxcd.io/prune: disabled

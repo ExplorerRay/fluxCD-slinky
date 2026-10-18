@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Deploy clusters/kind-ci onto a fresh kind-single cluster
 # (bootstrap/kind/setup.sh single), then do the bootstrap steps Flux cannot
-# (docs/bootstrap.md, FreeIPA): the freeipa-ca ConfigMap, a test user in a
-# POSIX group, and that user's Slurm account. Used by
+# (docs/bootstrap.md, FreeIPA): a test user in a POSIX group, and that user's
+# Slurm account. Used by
 # .github/workflows/e2e.yaml; followed by tests/e2e/checks.sh.
 #
 # Flux clones REPO_URL at REVISION — not this working copy — so the commit
@@ -95,12 +95,6 @@ spec:
   interval: 10m0s
 EOF
 
-# Create the namespace up front so the freeipa-ca ConfigMap below has somewhere
-# to go regardless of Kustomization timing. Flux adopts the namespace. Slurm
-# pods that start before the ConfigMap exists retry the mount and recover once
-# it is created.
-kubectl create namespace slurm --dry-run=client -o yaml | kubectl apply -f -
-
 # Dependency order (clusters/kind-ci). Timeouts follow measured installs:
 # Ceph and FreeIPA (~9 min first install) dominate.
 wait_ks flux-system 5m
@@ -109,14 +103,11 @@ wait_ks cert-manager 10m
 wait_ks rook-ceph 25m
 wait_ks mariadb-operator 10m
 wait_ks freeipa 25m
+# Its Job copies the FreeIPA CA into slurm/freeipa-ca.
+wait_ks freeipa-ca 10m
 
 log "waiting for every FreeIPA service to report RUNNING"
 retry 900 kubectl -n freeipa exec ipa-0 -- ipactl status
-
-log "copying the FreeIPA CA into slurm/freeipa-ca"
-kubectl -n freeipa exec ipa-0 -- cat /etc/ipa/ca.crt |
-  kubectl -n slurm create configmap freeipa-ca --from-file=ca.crt=/dev/stdin \
-    --dry-run=client -o yaml | kubectl apply -f -
 
 log "creating FreeIPA user $E2E_USER in POSIX group $E2E_GROUP"
 admin_password="$(kubectl -n freeipa get secret freeipa-admin -o jsonpath='{.data.password}' | base64 -d)"

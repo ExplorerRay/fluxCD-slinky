@@ -72,15 +72,16 @@ flux get kustomizations -A
 flux get helmreleases -A
 ```
 
-Expect **9 Kustomizations** and **7 HelmReleases**, all `Ready`. Flux applies
+Expect **10 Kustomizations** and **7 HelmReleases**, all `Ready`. Flux applies
 components in dependency order, and it fans out rather than running in a
 single chain: `flux-cluster-repositories` gates `cert-manager` and
 `rook-ceph`; `cert-manager` gates `mariadb-operator` and `slurm-operator`;
-`rook-ceph` gates `freeipa`; `slurm-database` waits on `mariadb-operator`
-plus `rook-ceph`; and `slurm` fans in from `slurm-operator`,
-`slurm-database` and `freeipa`. A Kustomization never reconciles while
-anything it depends on is unhealthy, so when one is stuck, check its own
-`dependsOn` entries rather than assuming a linear order. See
+`rook-ceph` gates `freeipa`, which gates `freeipa-ca` (its Job copies the
+FreeIPA CA into the `slurm` namespace); `slurm-database` waits on
+`mariadb-operator` plus `rook-ceph`; and `slurm` fans in from
+`slurm-operator`, `slurm-database` and `freeipa-ca`. A Kustomization never
+reconciles while anything it depends on is unhealthy, so when one is stuck,
+check its own `dependsOn` entries rather than assuming a linear order. See
 [stack-overview.md](stack-overview.md) for the full dependency diagram.
 
 This layer is necessary but not sufficient: a Ready Kustomization only means
@@ -126,9 +127,15 @@ kubectl -n freeipa exec ipa-0 -- ipactl status
 Also confirm at least one user/group exists to authenticate as — FreeIPA
 starts empty, so with no users created, §5 will fail for a different reason
 than a broken server. See the FreeIPA section of [bootstrap.md](bootstrap.md)
-for creating users and groups with the `ipa` CLI, and for the one-time step of
-extracting the FreeIPA CA into the `slurm` namespace (`freeipa-ca` ConfigMap),
-which SSSD needs to validate the LDAPS certificate.
+for creating users and groups with the `ipa` CLI. The FreeIPA CA, which SSSD
+needs to validate the LDAPS certificate, is copied into the `slurm` namespace
+(`freeipa-ca` ConfigMap) by the `freeipa-ca` Kustomization's Job; confirm it
+ran:
+
+```sh
+kubectl -n slurm get job freeipa-ca-export   # COMPLETIONS 1/1
+kubectl -n slurm get configmap freeipa-ca
+```
 
 ## 5. A user can log in and run a job
 
@@ -319,7 +326,7 @@ secondary groups, SSH hangs).
 | Layer | Check | Expect |
 | --- | --- | --- |
 | Cluster | `kubectl get nodes` | All nodes `Ready` |
-| Flux | `flux get kustomizations -A` / `flux get helmreleases -A` | 9 Kustomizations, 7 HelmReleases `Ready` |
+| Flux | `flux get kustomizations -A` / `flux get helmreleases -A` | 10 Kustomizations, 7 HelmReleases `Ready` |
 | Storage | `kubectl get pvc -A` | All PVCs `Bound` |
 | FreeIPA | `kubectl -n freeipa exec ipa-0 -- ipactl status` | All FreeIPA services running |
 | Identity resolution | `kubectl -n slurm exec <login-pod> -- getent passwd <user>` | User resolves |
